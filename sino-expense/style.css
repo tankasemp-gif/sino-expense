@@ -36,8 +36,13 @@ body {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 12px;
   padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px;
-  background: var(--navy); color: #fff;
+  background: var(--navy); color: #fff; flex-wrap: wrap;
 }
+.nav { flex-basis: 100%; display: flex; gap: 20px; }
+.nav:empty { display: none; }
+.nav a { color: #fff; opacity: .75; text-decoration: none; font-size: 14px; padding: 2px 0; border-bottom: 2px solid transparent; }
+.nav a.on { opacity: 1; border-color: #fff; }
+.nav .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 999px; background: #fff; color: var(--navy); font-size: 12px; font-weight: 700; text-align: center; }
 .brand { color: #fff; text-decoration: none; font-weight: 700; letter-spacing: .02em; }
 .brand span { font-weight: 400; opacity: .8; }
 .who { flex: 1; font-size: 13px; opacity: .85; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -141,6 +146,10 @@ input[readonly] { background: var(--paper); color: var(--ink-soft); }
 .log { list-style: none; padding: 0; margin: 0; font-size: 14px; }
 .log li { padding: 6px 0 6px 14px; border-left: 2px solid var(--line); position: relative; }
 .log li::before { content: ""; position: absolute; left: -5px; top: 13px; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+
+/* แผงอนุมัติ */
+.decide { border: 2px solid var(--blue); }
+.decide .actions .btn { flex: 1 1 120px; }
 
 /* toast */
 .toast {
