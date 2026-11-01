@@ -7,5 +7,5 @@
 // =====================================================================
 window.APP_CONFIG = {
   SUPABASE_URL: 'https://bzsveknakvxdewcnncni.supabase.co',
-  SUPABASE_KEY: 'วาง_PUBLISHABLE_KEY_ตรงนี้',
+  SUPABASE_KEY: 'sb_publishable_NJTfh2EiNJOPPm6wLpkDLQ_gI17lt4o',
 };
