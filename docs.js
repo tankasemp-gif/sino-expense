@@ -7,6 +7,7 @@
 //   4) ใบรับรองแทนใบเสร็จรับเงิน (รายการที่ใช้ใบรับรองแทน)
 //   5) MEMORANDUM (ถ้ามี)
 // ใช้ฟังก์ชันช่วยจาก app.js (esc, money, monthLabel, catOf, memoDocHTML)
+// ลายเซ็น: ใส่ของพนักงานเมื่อยื่นแล้ว และของ SVP เมื่ออนุมัติในระบบแล้วเท่านั้น
 // =====================================================================
 'use strict';
 
@@ -25,10 +26,12 @@ const COMPANY_HEAD = `
   </div>`;
 
 const fill = (v, cls) => `<span class="fill ${cls || ''}">${esc(v ?? '') || '&nbsp;'}</span>`;
+const sigImg = (url) => (url ? `<img class="sig-img" src="${esc(url)}" alt="">` : '');
+const sigLine = (url, cls) => `<span class="fill ${cls || 'w40'} sigfill">${sigImg(url) || '&nbsp;'}</span>`;
 const onlineMark = (ts) => (ts ? `<div class="online">✓ อนุมัติออนไลน์ ${esc(dmy(bkkDate(ts)))}</div>` : '');
 
 // 1) ใบเบิกสรุปยอดเงินโอน
-function docRequisition(D, budgets) {
+function docRequisition(D, budgets, sig) {
   const { claim, emp, items } = D;
   const rows = items.map((it) => {
     const cat = catOf(it.category_code);
@@ -54,8 +57,8 @@ function docRequisition(D, budgets) {
     <table class="grid req-sign">
       <tr><th>REQUEST BY / DATE</th><th>APPROVE BY /DATE</th><th>PAY BY /DATE</th><th>RECEIVE BY DATE</th></tr>
       <tr>
-        <td><div class="sig-space"></div>${esc(emp.full_name || '')}<br><small>${esc(dmy(bkkDate(claim.submitted_at)))}</small></td>
-        <td><div class="sig-space">${onlineMark(claim.approved_at)}</div>${esc(claim.approved_name || '')}<br><small>${esc(dmy(bkkDate(claim.approved_at)))}</small></td>
+        <td><div class="sig-space">${sigImg(sig.emp)}</div>${esc(emp.full_name || '')}<br><small>${esc(dmy(bkkDate(claim.submitted_at)))}</small></td>
+        <td><div class="sig-space">${sigImg(sig.svp)}${onlineMark(claim.approved_at)}</div>${esc(claim.approved_name || '')}<br><small>${esc(dmy(bkkDate(claim.approved_at)))}</small></td>
         <td><div class="sig-space"></div></td>
         <td><div class="sig-space"></div></td>
       </tr>
@@ -64,7 +67,7 @@ function docRequisition(D, budgets) {
 }
 
 // 2) บันทึกขออนุมัติเลี้ยงรับรอง
-function docEntertain(D, it) {
+function docEntertain(D, it, sig) {
   const { claim, emp } = D;
   const d = it.details || {};
   const sub = bkkDate(claim.submitted_at);
@@ -87,14 +90,14 @@ function docEntertain(D, it) {
     <p>ในวันที่ ${fill(dmy(d.event_date), 'w20')}</p>
     <p class="ind">จึงเรียนมาเพื่อโปรดพิจารณาอนุมัติเงินค่าเลี้ยงรับรองจำนวน ${fill(money(it.amount_thb), 'w20')} บาท</p>
     <div class="sign-block">
-      <p>ลงชื่อ ${fill('', 'w40')} ผู้ขออนุมัติ</p>
+      <p>ลงชื่อ ${sigLine(sig.emp)} ผู้ขออนุมัติ</p>
       <p>( ${fill(emp.name_en || emp.full_name, 'w40')} )</p>
       <p>ตำแหน่ง ${fill(emp.title_en || emp.position_title, 'w40')}</p>
     </div>
     <hr class="thick">
     <div class="sign-block">
       ${!ceo ? onlineMark(claim.approved_at) : ''}
-      <p>ลงชื่อ ${fill('', 'w40')} ผู้อนุมัติ</p>
+      <p>ลงชื่อ ${sigLine(ceo ? null : sig.svp)} ผู้อนุมัติ</p>
       <p>( ${fill(ceo ? '' : claim.approved_name, 'w40')} )</p>
       <p>ตำแหน่ง ${fill(ceo ? 'CEO' : claim.approved_title, 'w40')}</p>
     </div>
@@ -102,7 +105,7 @@ function docEntertain(D, it) {
 }
 
 // 3) แบบขอเบิกเงินชดเชยกรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงาน
-function docGas(D, gasItems) {
+function docGas(D, gasItems, sig) {
   const { claim, emp } = D;
   const trips = gasItems.flatMap((it) => (it.details && it.details.trips) || []);
   const plate = (gasItems.find((it) => it.details && it.details.car_plate) || { details: {} }).details.car_plate;
@@ -134,7 +137,7 @@ function docGas(D, gasItems) {
     <table class="gas-foot"><tr>
       <td class="hr-box"><b>สำหรับ HR Share Service</b><br>วันที่รับเอกสาร ...............................<br>บันทึกเพิ่มเติม ..............................................<br>หมายเหตุ :</td>
       <td>
-        <p>พนักงานผู้ขอเบิก ..........................................</p>
+        <p>พนักงานผู้ขอเบิก ${sigLine(sig.emp, 'w40')}</p>
         <p class="c">( ${esc(emp.full_name || '')} )</p>
         <p class="c">วันที่ ${esc(dmy(bkkDate(claim.submitted_at)))}</p>
         <p style="margin-top:18px">ผู้มีอำนาจอนุมัติ ..........................................</p>
@@ -145,7 +148,7 @@ function docGas(D, gasItems) {
 }
 
 // 4) ใบรับรองแทนใบเสร็จรับเงิน
-function docSubstitute(D, subItems) {
+function docSubstitute(D, subItems, sig) {
   const { claim, emp } = D;
   const total = subItems.reduce((s, it) => s + Number(it.amount_thb), 0);
   const dates = subItems.map((it) => it.receipt_date).filter(Boolean).sort();
@@ -167,8 +170,8 @@ function docSubstitute(D, subItems) {
     <p>ขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ และข้าพเจ้าได้จ่ายไปในงานของทาง
       บริษัท โดยแท้ ตั้งแต่วันที่ ${fill(dmy(dates[0]), 'w15')} ถึงวันที่ ${fill(dmy(dates[dates.length - 1]), 'w15')}</p>
     <div class="sign-block">
-      <p>ลงชื่อ ${fill('', 'w40')} (ผู้เบิกจ่าย)</p><p>( ${fill(emp.full_name, 'w40')} )</p>
-      <p style="margin-top:24px">ลงชื่อ ${fill('', 'w40')} (ผู้อนุมัติ)</p><p>( ${fill(claim.approved_name, 'w40')} )</p>
+      <p>ลงชื่อ ${sigLine(sig.emp)} (ผู้เบิกจ่าย)</p><p>( ${fill(emp.full_name, 'w40')} )</p>
+      <p style="margin-top:24px">ลงชื่อ ${sigLine(sig.svp)} (ผู้อนุมัติ)</p><p>( ${fill(claim.approved_name, 'w40')} )</p>
     </div>
   </section>`;
 }
@@ -184,15 +187,25 @@ async function openClaimDocs(D) {
     const { data } = await sb.from('budget_rules').select('*').eq('level_code', D.emp.level_code);
     (data || []).forEach((b) => { budgets[b.budget_type] = Number(b.monthly_amount); });
   }
-  const pages = [docRequisition(D, budgets)];
-  D.items.filter((it) => it.category_code === 'ENTERTAIN').forEach((it) => pages.push(docEntertain(D, it)));
-  const gas = D.items.filter((it) => it.category_code === 'GAS');
-  if (gas.length) pages.push(docGas(D, gas));
-  const subs = D.items.filter((it) => it.receipt_type === 'substitute');
-  if (subs.length) pages.push(docSubstitute(D, subs));
-  D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true)}</section>`));
+  // ลายเซ็น (ถ้ามี): พนักงานเมื่อยื่นแล้ว / SVP เมื่ออนุมัติแล้ว
+  const sig = { emp: null, svp: null };
+  const want = [];
+  if (D.claim.submitted_at) want.push(['emp', `${D.claim.employee_id}/signature.png`]);
+  if (D.claim.approved_at && D.claim.approved_by) want.push(['svp', `${D.claim.approved_by}/signature.png`]);
+  if (want.length) {
+    const { data } = await sb.storage.from('signatures').createSignedUrls(want.map((x) => x[1]), 900);
+    (data || []).forEach((r, i) => { if (r && r.signedUrl && !r.error) sig[want[i][0]] = r.signedUrl; });
+  }
 
-  const css = new URL('style.css?v=5', location.href).href;
+  const pages = [docRequisition(D, budgets, sig)];
+  D.items.filter((it) => it.category_code === 'ENTERTAIN').forEach((it) => pages.push(docEntertain(D, it, sig)));
+  const gas = D.items.filter((it) => it.category_code === 'GAS');
+  if (gas.length) pages.push(docGas(D, gas, sig));
+  const subs = D.items.filter((it) => it.receipt_type === 'substitute');
+  if (subs.length) pages.push(docSubstitute(D, subs, sig));
+  D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`));
+
+  const css = new URL('style.css?v=6', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

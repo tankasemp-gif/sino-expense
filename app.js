@@ -1,5 +1,5 @@
 // =====================================================================
-// SINO ทำเบิกออนไลน์ — ส่วนที่ 2–5: ล็อกอิน, ใบเบิก, ยื่นเบิก, อนุมัติ, Memo, เอกสารดาวน์โหลด
+// SINO ทำเบิกออนไลน์ — ส่วนที่ 2–6: ล็อกอิน, ใบเบิก, ยื่นเบิก, อนุมัติ, Memo, เอกสารดาวน์โหลด, ลายเซ็น
 // ไฟล์นี้ไม่มีรหัสผ่านหรือ key (key อยู่ใน config.js)
 // =====================================================================
 'use strict';
@@ -101,11 +101,13 @@ function showTop(on) {
   if (!on || !S.profile) return;
   document.getElementById('who').textContent = S.profile.full_name || S.profile.email || '';
   const nav = document.getElementById('nav');
-  if (!isApprover()) { nav.innerHTML = ''; return; }
   const h = location.hash || '#/';
   const onApprove = h === '#/approve';
-  nav.innerHTML = `<a href="#/" class="${onApprove ? '' : 'on'}">ใบเบิกของฉัน</a>
-    <a href="#/approve" class="${onApprove ? 'on' : ''}">${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}<span class="count" id="qcount"></span></a>`;
+  const onMe = h === '#/me';
+  nav.innerHTML = `<a href="#/" class="${onApprove || onMe ? '' : 'on'}">ใบเบิกของฉัน</a>
+    ${isApprover() ? `<a href="#/approve" class="${onApprove ? 'on' : ''}">${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}<span class="count" id="qcount"></span></a>` : ''}
+    <a href="#/me" class="${onMe ? 'on' : ''}">ลายเซ็น / ข้อมูลของฉัน</a>`;
+  if (!isApprover()) return;
   queueQuery(false).then(({ count }) => {
     const el = document.getElementById('qcount');
     if (el) el.textContent = count ? String(count) : '';
@@ -152,6 +154,7 @@ async function route() {
   window.scrollTo(0, 0);
   const m = h.match(/^#\/claim\/([0-9a-f-]{36})$/);
   if (h === '#/new') return viewNew();
+  if (h === '#/me') return viewMe();
   if (h === '#/approve') return isApprover() ? viewApprove() : viewHome();
   if (m) return viewClaim(m[1]);
   return viewHome();
@@ -982,9 +985,11 @@ function bindDecide(claim) {
 const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const memoDate = (iso) => { if (!iso) return '-'; const [y, m, d] = iso.slice(0, 10).split('-'); return `${d}-${EN_MONTHS[+m - 1]}-${y}`; };
 
-function memoDocHTML(m, emp, forPrint) {
+function memoDocHTML(m, emp, forPrint, sigs) {
+  sigs = sigs || {};
   const tname = (m.subject || '').replace(/^ขออนุมัติ/, '').replace(/เกินวงเงิน$/, '');
-  const sign = (name, title, at, fallbackTitle, label) => `<td class="sig">
+  const sign = (name, title, at, fallbackTitle, label, sigUrl) => `<td class="sig">
+      ${at && sigUrl ? `<img class="sig-img" src="${esc(sigUrl)}" alt="">` : ''}
       <div class="sig-mark">${at ? `✓ ${label || 'อนุมัติออนไลน์'}<br><span>${esc(label ? fmtDate(at) : fmtDateTime(at))}</span>` : m.status === 'draft' || forPrint ? '' : '<span class="muted">รออนุมัติ</span>'}</div>
       <div class="sig-name">${esc(name || '')}</div><div class="sig-title">${esc(title || fallbackTitle || '')}</div></td>`;
   return `<article class="memo-doc">
@@ -1012,8 +1017,8 @@ function memoDocHTML(m, emp, forPrint) {
     <table class="memo-sign">
       <tr><th>Prepared by:</th><th>Vetted by:</th><th>Supported by:</th><th>Approved by:</th></tr>
       <tr>
-        ${sign(m.prepared_name || emp.full_name, m.prepared_title || emp.position_title, m.status !== 'draft' ? m.memo_date : null, '', 'ยื่นออนไลน์')}
-        ${sign(m.vetted_name, m.vetted_title, m.vetted_at, 'SVP')}
+        ${sign(m.prepared_name || emp.full_name, m.prepared_title || emp.position_title, m.status !== 'draft' ? m.memo_date : null, '', 'ยื่นออนไลน์', sigs.emp)}
+        ${sign(m.vetted_name, m.vetted_title, m.vetted_at, 'SVP', '', sigs.svp)}
         ${sign(m.supported_name, m.supported_title, m.supported_at, 'SVP Finance and Human Resource')}
         ${sign(m.approved_name, m.approved_title, m.approved_at, 'CEO')}
       </tr>
@@ -1024,13 +1029,138 @@ function memoDocHTML(m, emp, forPrint) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=5', location.href).href;
+  const css = new URL('style.css?v=6', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="${css}"></head>
     <body class="print-page" onload="setTimeout(function(){window.print()},400)">${memoDocHTML(m, emp, true)}</body></html>`);
   w.document.close();
+}
+
+// ---------------------------------------------------------------------
+// ข้อมูลของฉัน + ลายเซ็น
+// ---------------------------------------------------------------------
+const SIG_BUCKET = 'signatures';
+const sigPath = (uid) => `${uid}/signature.png`;
+const ROLE_LABEL = { employee: 'พนักงาน', svp: 'SVP (ผู้อนุมัติ)', ceo: 'CEO', hr: 'HR', accounting: 'บัญชี', admin: 'Admin' };
+
+// ทำพื้นขาวให้โปร่งใส + ตัดขอบว่าง แล้วคืนเป็น PNG
+async function canvasToSignaturePng(src, removeWhite) {
+  const cv = document.createElement('canvas');
+  cv.width = src.width; cv.height = src.height;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, cv.width, cv.height);
+  const px = img.data;
+  let minX = cv.width, minY = cv.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < cv.height; y++) {
+    for (let x = 0; x < cv.width; x++) {
+      const i = (y * cv.width + x) * 4;
+      if (removeWhite) {
+        const light = (px[i] + px[i + 1] + px[i + 2]) / 3;
+        if (light > 185) px[i + 3] = 0;
+        else { px[i] = Math.min(px[i], 40); px[i + 1] = Math.min(px[i + 1], 50); px[i + 2] = Math.min(px[i + 2], 110); px[i + 3] = 255; }
+      }
+      if (px[i + 3] > 20) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    }
+  }
+  if (maxX < 0) return null;   // ไม่มีเส้นลายเซ็น
+  ctx.putImageData(img, 0, 0);
+  const pad = 8;
+  const w = Math.min(cv.width, maxX - minX + pad * 2);
+  const h = Math.min(cv.height, maxY - minY + pad * 2);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  out.getContext('2d').drawImage(cv, Math.max(0, minX - pad), Math.max(0, minY - pad), w, h, 0, 0, w, h);
+  return new Promise((r) => out.toBlob(r, 'image/png'));
+}
+
+async function saveSignature(blob) {
+  if (!blob) { toast('ไม่พบลายเซ็นในภาพ ลองใหม่อีกครั้ง'); return false; }
+  const { error } = await sb.storage.from(SIG_BUCKET).upload(sigPath(S.profile.id), blob,
+    { contentType: 'image/png', upsert: true, cacheControl: '0' });
+  if (error) { toast('บันทึกลายเซ็นไม่สำเร็จ: ' + error.message); return false; }
+  toast('บันทึกลายเซ็นแล้ว');
+  return true;
+}
+
+async function viewMe() {
+  const p = S.profile;
+  $app.innerHTML = `<p class="muted center pad">กำลังโหลด…</p>`;
+  const { data } = await sb.storage.from(SIG_BUCKET).createSignedUrl(sigPath(p.id), 600);
+  const url = data && data.signedUrl;
+  const lv = S.refs.levels[p.level_code];
+  $app.innerHTML = `
+    <h1>ข้อมูลของฉัน</h1>
+    <section class="panel small">
+      <div><b>${esc(p.full_name || '-')}</b> ${p.name_en ? `<span class="muted">(${esc(p.name_en)})</span>` : ''}</div>
+      <div class="muted">รหัส ${esc(p.emp_code || '-')} · ${esc(p.position_title || '-')} · ${esc(lv ? lv.name : 'ยังไม่กำหนดระดับ')}</div>
+      <div class="muted">สิทธิ์ในระบบ: ${esc(ROLE_LABEL[p.role] || p.role)}${p.is_fhr ? ' + SVP Finance & HR' : ''}</div>
+      <p class="hint">ถ้าข้อมูลไม่ถูกต้อง แจ้ง admin ให้แก้ไข</p>
+    </section>
+
+    <h2>ลายเซ็น</h2>
+    <section class="panel">
+      <p class="hint" style="margin-top:0">ลายเซ็นจะถูกใส่ในเอกสารที่ดาวน์โหลด <b>เฉพาะขั้นที่คุณยื่นหรืออนุมัติในระบบแล้วเท่านั้น</b></p>
+      <div class="sig-preview">${url ? `<img src="${esc(url)}" alt="ลายเซ็นปัจจุบัน">` : '<span class="muted">ยังไม่มีลายเซ็น</span>'}</div>
+
+      <h3>วิธีที่ 1: เซ็นบนหน้าจอ</h3>
+      <canvas id="pad" class="sig-pad" width="600" height="220" aria-label="ช่องเซ็นชื่อ"></canvas>
+      <div class="actions">
+        <button class="btn ghost" type="button" id="padClear">ล้าง</button>
+        <button class="btn" type="button" id="padSave">บันทึกลายเซ็นนี้</button>
+      </div>
+
+      <h3>วิธีที่ 2: อัปโหลดรูปลายเซ็น</h3>
+      <p class="hint">เซ็นบนกระดาษขาวด้วยปากกาสีเข้ม แล้วถ่ายรูปให้ชัด ระบบจะลบพื้นหลังขาวและตัดขอบให้อัตโนมัติ</p>
+      <input id="sigFile" type="file" accept="image/*">
+      <div class="actions">
+        <button class="btn ghost" type="button" id="sigUpload">อัปโหลดรูปนี้</button>
+        ${url ? '<button class="btn danger" type="button" id="sigDelete">ลบลายเซ็น</button>' : ''}
+      </div>
+    </section>`;
+
+  // ช่องเซ็นบนหน้าจอ
+  const pad = document.getElementById('pad');
+  const ctx = pad.getContext('2d');
+  ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#13235b';
+  let drawing = false; let drawn = false;
+  const pos = (e) => { const r = pad.getBoundingClientRect(); return [(e.clientX - r.left) * pad.width / r.width, (e.clientY - r.top) * pad.height / r.height]; };
+  pad.addEventListener('pointerdown', (e) => { drawing = true; drawn = true; pad.setPointerCapture(e.pointerId); const [x, y] = pos(e); ctx.beginPath(); ctx.moveTo(x, y); });
+  pad.addEventListener('pointermove', (e) => { if (!drawing) return; const [x, y] = pos(e); ctx.lineTo(x, y); ctx.stroke(); });
+  const stop = () => { drawing = false; };
+  pad.addEventListener('pointerup', stop); pad.addEventListener('pointercancel', stop);
+  document.getElementById('padClear').addEventListener('click', () => { ctx.clearRect(0, 0, pad.width, pad.height); drawn = false; });
+  document.getElementById('padSave').addEventListener('click', async (e) => {
+    if (!drawn) { toast('กรุณาเซ็นในช่องก่อน'); return; }
+    e.target.disabled = true;
+    if (await saveSignature(await canvasToSignaturePng(pad, false))) viewMe(); else e.target.disabled = false;
+  });
+
+  document.getElementById('sigUpload').addEventListener('click', async (e) => {
+    const f = document.getElementById('sigFile').files[0];
+    if (!f) { toast('เลือกรูปลายเซ็นก่อน'); return; }
+    e.target.disabled = true;
+    try {
+      const bmp = await createImageBitmap(f);
+      const scale = Math.min(1, 900 / bmp.width);
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(bmp.width * scale); cv.height = Math.round(bmp.height * scale);
+      cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+      if (await saveSignature(await canvasToSignaturePng(cv, true))) { viewMe(); return; }
+    } catch (_) {
+      toast('อ่านรูปนี้ไม่ได้ ลองใช้ไฟล์ JPG หรือ PNG');
+    }
+    e.target.disabled = false;
+  });
+
+  const del = document.getElementById('sigDelete');
+  if (del) del.addEventListener('click', async () => {
+    if (!confirm('ลบลายเซ็นของคุณ?')) return;
+    const { error } = await sb.storage.from(SIG_BUCKET).remove([sigPath(p.id)]);
+    if (error) toast(errMsg(error)); else { toast('ลบลายเซ็นแล้ว'); viewMe(); }
+  });
 }
 
 init();

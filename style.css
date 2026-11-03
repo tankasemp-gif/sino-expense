@@ -180,14 +180,14 @@ input[readonly] { background: var(--paper); color: var(--ink-soft); }
 /* เอกสารสำหรับพิมพ์ (ใบเบิก / เลี้ยงรับรอง / Ent-Gas / ใบรับรองแทนใบเสร็จ) */
 .print-bar { position: sticky; top: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; background: var(--navy); color: #fff; padding: 10px 14px; margin: -16px -16px 16px; font-size: 14px; }
 .print-bar button { font: inherit; font-weight: 600; padding: 8px 14px; border: 0; border-radius: 6px; background: #fff; color: var(--navy); cursor: pointer; }
-.doc-page { background: #fff; color: #000; max-width: 800px; margin: 0 auto 20px; padding: 28px 32px; border: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; position: relative; }
+.doc-page { background: #fff; color: #000; max-width: 800px; margin: 0 auto 20px; padding: 36px 32px 28px; border: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; position: relative; }
 .doc-page p { margin: 4px 0; }
 .doc-page h2 { font-size: 18px; margin: 14px 0; }
 .doc-page .c { text-align: center; } .doc-page .r { text-align: right; } .doc-page .b { font-weight: 700; }
 .doc-page .small { font-size: 10px; }
 .doc-page .ind { text-indent: 40px; }
 .doc-page .gap { margin-top: 18px; }
-.doc-ref { position: absolute; top: 8px; right: 12px; font-size: 10px; color: #555; border: 1px solid #999; padding: 0 6px; }
+.doc-ref { position: absolute; top: 6px; right: 12px; font-size: 10px; color: #555; border: 1px solid #999; padding: 0 6px; }
 .fill { display: inline-block; min-width: 60px; border-bottom: 1px dotted #333; padding: 0 6px; text-align: center; line-height: 1.5; }
 .fill.w8 { min-width: 8%; } .fill.w10 { min-width: 10%; } .fill.w12 { min-width: 12%; } .fill.w15 { min-width: 15%; }
 .fill.w20 { min-width: 20%; } .fill.w30 { min-width: 30%; } .fill.w40 { min-width: 40%; } .fill.w45 { min-width: 45%; } .fill.w60 { min-width: 60%; }
@@ -210,6 +210,16 @@ hr.thick { border: 0; border-top: 3px solid #000; margin: 24px 0; }
 .gas-foot { width: 100%; margin-top: 10px; font-size: 12px; }
 .gas-foot td { vertical-align: top; width: 50%; padding: 6px; }
 .hr-box { border: 1px solid #000; line-height: 2; }
+
+/* ลายเซ็น */
+.sig-preview { min-height: 80px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line); border-radius: 8px; background: #fff; padding: 8px; }
+.sig-preview img { max-height: 90px; max-width: 100%; }
+.sig-pad { width: 100%; height: auto; aspect-ratio: 600 / 220; background: #fff; border: 1px solid var(--line); border-radius: 8px; touch-action: none; cursor: crosshair;
+  background-image: linear-gradient(to top, transparent 24%, #c9d3df 24%, #c9d3df calc(24% + 1px), transparent calc(24% + 1px)); }
+.sig-img { display: block; max-height: 44px; max-width: 150px; margin: 0 auto; }
+.fill.sigfill { min-height: 30px; vertical-align: bottom; }
+.fill.sigfill .sig-img { display: inline-block; max-height: 40px; margin-bottom: -4px; }
+.memo-sign .sig-img { max-height: 40px; margin-bottom: 2px; }
 
 /* toast */
 .toast {
@@ -237,6 +247,6 @@ hr.thick { border: 0; border-top: 3px solid #000; margin: 24px 0; }
   body.print-page { padding: 0; }
   .print-bar { display: none !important; }
   .print-page .memo-doc { border: 0; padding: 0; overflow: visible; }
-  .doc-page { border: 0; margin: 0; padding: 0; max-width: none; break-after: page; page-break-after: always; }
+  .doc-page { border: 0; margin: 0; padding: 22px 0 0; max-width: none; break-after: page; page-break-after: always; }
   .doc-page:last-child { break-after: auto; page-break-after: auto; }
 }
