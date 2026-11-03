@@ -14,9 +14,11 @@
 const dmy = (iso) => { if (!iso) return ''; const [y, m, d] = iso.slice(0, 10).split('-'); return `${d}/${m}/${y}`; };
 const bkkDate = (ts) => (ts ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date(ts)) : '');
 
-const COMPANY_HEAD = `
+const LOGO_URL = () => new URL('sino-logo.png', location.href).href;
+const DOC_FONTS = 'https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&family=Carlito:wght@400;700&display=swap';
+const companyHead = () => `
   <div class="doc-letterhead">
-    <div class="lh-logo">SINO<small>LOGISTICS CORPORATION</small></div>
+    <img class="lh-logo" src="${LOGO_URL()}" alt="SINO Logistics Corporation">
     <div class="lh-text">
       <b>SINO Logistics Corporation Public Company Limited</b><br>
       1011 Supalai Grand Tower 7th Floor Unit 05, Rama 3 Road, Chongnonsee, Yannawa, Bangkok, 10120 Thailand<br>
@@ -76,7 +78,7 @@ function docEntertain(D, it, sig) {
   const ceo = Number(it.amount_thb) > 10000;
   return `<section class="doc-page doc-ent">
     <div class="doc-ref">Ref. ${esc(claim.ref_no)} / รายการที่ ${it.line_no}</div>
-    ${COMPANY_HEAD}
+    ${companyHead()}
     <h2 class="c">บันทึกขออนุมัติเลี้ยงรับรอง</h2>
     <p class="r">วันที่ ${fill(dd, 'w8')} / ${fill(m, 'w8')} / ${fill(y, 'w12')}</p>
     <p>เรื่อง&nbsp; ขออนุมัติเงินค่าเลี้ยงรับรอง</p>
@@ -99,7 +101,7 @@ function docEntertain(D, it, sig) {
       ${!ceo ? onlineMark(claim.approved_at) : ''}
       <p>ลงชื่อ ${sigLine(ceo ? null : sig.svp)} ผู้อนุมัติ</p>
       <p>( ${fill(ceo ? '' : claim.approved_name, 'w40')} )</p>
-      <p>ตำแหน่ง ${fill(ceo ? 'CEO' : claim.approved_title, 'w40')}</p>
+      <p>ตำแหน่ง ${fill(ceo ? 'CEO' : (claim.approved_name ? claim.approved_title : ''), 'w40')}</p>
     </div>
   </section>`;
 }
@@ -157,7 +159,7 @@ function docSubstitute(D, subItems, sig) {
   while (rows.length < 12) rows.push('<tr><td>&nbsp;</td><td></td><td></td><td></td></tr>');
   return `<section class="doc-page doc-sub">
     <div class="doc-ref">Ref. ${esc(claim.ref_no)}</div>
-    ${COMPANY_HEAD}
+    ${companyHead()}
     <h2 class="c">ใบรับรองแทนใบเสร็จรับเงิน</h2>
     <p>ร้าน ${fill('', 'w60')} (ผู้ซื้อ/ผู้ให้บริการ)</p>
     <table class="grid">
@@ -205,12 +207,12 @@ async function openClaimDocs(D) {
   if (subs.length) pages.push(docSubstitute(D, subs, sig));
   D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`));
 
-  const css = new URL('style.css?v=6', location.href).href;
+  const css = new URL('style.css?v=7', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${esc(D.claim.ref_no)}</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="${DOC_FONTS}" rel="stylesheet">
     <link rel="stylesheet" href="${css}"></head>
     <body class="print-page">
       <div class="print-bar">เอกสาร ${pages.length} หน้า · กด <b>พิมพ์</b> แล้วเลือก <b>บันทึกเป็น PDF / Save as PDF</b>

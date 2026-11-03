@@ -338,9 +338,12 @@ async function loadClaim(id) {
     sb.from('memos').select('*').eq('claim_id', id).order('memo_kind'),
   ]);
   if (c.error) throw c.error;
-  const { data: emp } = await sb.from('profiles')
-    .select('id, full_name, emp_code, position_title, supervisor_id, level_code, name_en, title_en, department, company, car_plate')
-    .eq('id', c.data.employee_id).single();
+  const { data: emp } = await sb.from('profiles').select('*').eq('id', c.data.employee_id).single();
+  // ชื่อผู้อนุมัติ (ใบเก่าที่ยังไม่มีชื่อเก็บไว้)
+  if (c.data.approved_by && !c.data.approved_name) {
+    const { data: ap } = await sb.from('profiles').select('full_name, name_en, title_en, position_title').eq('id', c.data.approved_by).single();
+    if (ap) { c.data.approved_name = ap.name_en || ap.full_name; c.data.approved_title = ap.title_en || ap.position_title; }
+  }
   const attList = atts.data || [];
   const urls = {};
   if (attList.length) {
@@ -994,7 +997,7 @@ function memoDocHTML(m, emp, forPrint, sigs) {
       <div class="sig-name">${esc(name || '')}</div><div class="sig-title">${esc(title || fallbackTitle || '')}</div></td>`;
   return `<article class="memo-doc">
     <table class="memo-top"><tr>
-      <td class="logo">SINO<small>LOGISTICS CORPORATION</small></td>
+      <td class="logo"><img src="${esc(new URL('sino-logo.png', location.href).href)}" alt="SINO Logistics Corporation"></td>
       <td><b class="memo-title">MEMORANDUM</b> No. ${esc(m.memo_no || '(ออกเลขเมื่อยื่นเบิก)')}</td></tr></table>
     <table class="memo-head">
       <tr><th>To:</th><td>${esc(m.to_name || 'CEO')}</td></tr>
@@ -1029,10 +1032,10 @@ function memoDocHTML(m, emp, forPrint, sigs) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=6', location.href).href;
+  const css = new URL('style.css?v=7', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="${DOC_FONTS}" rel="stylesheet">
     <link rel="stylesheet" href="${css}"></head>
     <body class="print-page" onload="setTimeout(function(){window.print()},400)">${memoDocHTML(m, emp, true)}</body></html>`);
   w.document.close();
