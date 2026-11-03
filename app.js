@@ -988,42 +988,64 @@ function bindDecide(claim) {
 const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const memoDate = (iso) => { if (!iso) return '-'; const [y, m, d] = iso.slice(0, 10).split('-'); return `${d}-${EN_MONTHS[+m - 1]}-${y}`; };
 
+const MEMO_TOPIC = { ENTERTAIN: 'ค่าเลี้ยงรับรอง', GAS: 'ค่าน้ำมัน', PHONE: 'ค่าโทรศัพท์', PARKING: 'ค่าที่จอดรถ', EXPRESSWAY: 'ค่าทางด่วน' };
+
+// โครงตามไฟล์ Memo ต้นฉบับ: หัว MEMORANDUM / To-CC-From-Date-Subject / 1–4 / ตารางลงนาม 4 ช่อง
 function memoDocHTML(m, emp, forPrint, sigs) {
   sigs = sigs || {};
-  const tname = (m.subject || '').replace(/^ขออนุมัติ/, '').replace(/เกินวงเงิน$/, '');
-  const sign = (name, title, at, fallbackTitle, label, sigUrl) => `<td class="sig">
-      ${at && sigUrl ? `<img class="sig-img" src="${esc(sigUrl)}" alt="">` : ''}
-      <div class="sig-mark">${at ? `✓ ${label || 'อนุมัติออนไลน์'}<br><span>${esc(label ? fmtDate(at) : fmtDateTime(at))}</span>` : m.status === 'draft' || forPrint ? '' : '<span class="muted">รออนุมัติ</span>'}</div>
-      <div class="sig-name">${esc(name || '')}</div><div class="sig-title">${esc(title || fallbackTitle || '')}</div></td>`;
+  const st = S.settings || {};
+  const topic = MEMO_TOPIC[m.memo_kind] || (m.subject || '').replace(/^ขออนุมัติ/, '').replace(/เกินวงเงิน$/, '');
+  const box = (on) => `<span class="mbox">${on ? '✓' : ''}</span>`;
+  const mark = (at, label, url) => `${at && url ? `<img class="sig-img" src="${esc(url)}" alt="">` : ''}${at
+    ? `<div class="sig-mark">✓ ${label}<br><span>${esc(label === 'ยื่นออนไลน์' ? fmtDate(at) : fmtDateTime(at))}</span></div>`
+    : (m.status === 'draft' || forPrint ? '' : '<div class="sig-mark"><span class="muted">รออนุมัติ</span></div>')}`;
+  const submitted = m.status !== 'draft' ? m.memo_date : null;
   return `<article class="memo-doc">
-    <table class="memo-top"><tr>
-      <td class="logo"><img src="${esc(new URL('sino-logo.png', location.href).href)}" alt="SINO Logistics Corporation"></td>
-      <td><b class="memo-title">MEMORANDUM</b> No. ${esc(m.memo_no || '(ออกเลขเมื่อยื่นเบิก)')}</td></tr></table>
     <table class="memo-head">
-      <tr><th>To:</th><td>${esc(m.to_name || 'CEO')}</td></tr>
+      <tr class="memo-top"><td class="logo"><img src="${esc(new URL('sino-logo.png', location.href).href)}" alt="SINO Logistics Corporation"></td>
+        <td><b class="memo-title">MEMORANDUM</b> No. ${esc(m.memo_no || '(ออกเลขเมื่อยื่นเบิก)')}</td></tr>
+      <tr><th>To:</th><td>${esc(m.to_name || st.memo_to_name || '')}</td></tr>
       <tr><th>CC:</th><td>${esc(m.cc || '-')}</td></tr>
-      <tr><th>From:</th><td>${esc(m.from_name || emp.full_name || '')}</td></tr>
+      <tr><th>From:</th><td>${esc(m.from_name || emp.name_en || emp.full_name || '')}</td></tr>
       <tr><th>Date:</th><td>${m.memo_date ? memoDate(m.memo_date) : '(วันที่ยื่น)'}</td></tr>
       <tr><th>Subject:</th><td>${esc(m.subject)}</td></tr>
     </table>
-    <h4>1. Background:</h4><p>${esc(m.background || '')}</p>
-    <h4>2. Requests &amp; Reasons:</h4>
-    <p>จากที่กล่าวข้างต้น จึงขออนุมัติงบประมาณใช้จ่ายสำหรับ${esc(tname)}ที่เกินจาก Budget อีกจำนวนทั้งสิ้น ${money(m.amount_requested)} บาท${m.request_text ? ' ' + esc(m.request_text) : ''}</p>
-    <p>We request your approval for ขออนุมัติงบประมาณใช้จ่ายเกินวงเงิน.</p>
+
+    <div class="memo-sec"><b>1. Background:</b></div>
+    <p class="memo-body">${esc(m.background || '')}</p>
+
+    <div class="memo-sec"><b>2. Requests &amp; Reasons:</b></div>
+    <p class="memo-body">จากที่กล่าวข้างต้น จึงขออนุมัติงบประมาณใช้จ่ายสำหรับ${esc(topic)}ที่เกินจาก Budget อีกจำนวน ทั้งสิ้น ${money(m.amount_requested)}&nbsp; บาท${m.request_text ? ' ' + esc(m.request_text) : ''}</p>
+    <p class="memo-body">We request your approval for ขออนุมัติงบประมาณใช้จ่าย เกินวงเงิน.</p>
+
     <table class="memo-budget">
-      <tr><th>3. Budget:</th><td>${m.budget_flag === 'budgeted' ? '☑' : '☐'} Budgeted</td><td>${m.budget_flag === 'unbudgeted' ? '☑' : '☐'} Unbudgeted</td>
-        <th>Account Code:</th><td>${esc(m.account_code || '')} ${esc(m.cost_center || '')}</td></tr>
-      <tr><th>Budget Approved</th><td colspan="2">THB ${money(m.budget_approved)}</td><th>Budget Available:</th><td>${money(m.budget_available)}</td></tr>
-      <tr><th>Budget Requested</th><td colspan="2">THB ${money(m.amount_requested)}</td><th>Budget Remaining:</th><td>-</td></tr>
+      <tr><th>3. Budget:</th><td>${box(m.budget_flag === 'budgeted')} Budgeted</td><td>${box(m.budget_flag !== 'budgeted')} Unbudgeted</td>
+        <td>Account Code:</td><td>${esc(m.account_code || '')}&nbsp;&nbsp; ${esc(m.cost_center || '')}</td></tr>
+      <tr><td>Budget Approved</td><td colspan="2">THB ${money(m.budget_approved)} บาท</td><td>Budget Available:</td><td>${money(m.budget_available)}</td></tr>
+      <tr><td>Budget Requested</td><td colspan="2">THB ${money(m.amount_requested)} บาท</td><td>Budget Remaining:</td><td>-</td></tr>
     </table>
-    <h4>4. Recommendation:</h4><p>${esc(m.recommendation || 'It is our recommendation to approve')}</p>
+
+    <p class="memo-sec"><b>4. Recommendation:</b> ${esc(m.recommendation || 'It is our recommendation to approve')}</p>
+
     <table class="memo-sign">
       <tr><th>Prepared by:</th><th>Vetted by:</th><th>Supported by:</th><th>Approved by:</th></tr>
-      <tr>
-        ${sign(m.prepared_name || emp.full_name, m.prepared_title || emp.position_title, m.status !== 'draft' ? m.memo_date : null, '', 'ยื่นออนไลน์', sigs.emp)}
-        ${sign(m.vetted_name, m.vetted_title, m.vetted_at, 'SVP', '', sigs.svp)}
-        ${sign(m.supported_name, m.supported_title, m.supported_at, 'SVP Finance and Human Resource')}
-        ${sign(m.approved_name, m.approved_title, m.approved_at, 'CEO')}
+      <tr class="sig-row">
+        <td>${mark(submitted, 'ยื่นออนไลน์', sigs.emp)}</td>
+        <td>${mark(m.vetted_at, 'อนุมัติออนไลน์', sigs.svp)}</td>
+        <td>${mark(m.supported_at, 'อนุมัติออนไลน์')}</td>
+        <td>${mark(m.approved_at, 'อนุมัติออนไลน์')}</td>
+      </tr>
+      <tr class="name-row">
+        <td>${esc(m.prepared_name || emp.name_en || emp.full_name || '')}</td>
+        <td>${esc(m.vetted_name || '')}</td>
+        <td>${esc(st.memo_supported_name || m.supported_name || '')}</td>
+        <td>${esc(st.memo_approved_name || m.approved_name || '')}</td>
+      </tr>
+      <tr class="title-row">
+        <td>${esc(m.prepared_title || emp.title_en || emp.position_title || '')}</td>
+        <td>${esc(m.vetted_title || 'SVP Sales')}</td>
+        <td>${esc(st.memo_supported_title || m.supported_title || '')}</td>
+        <td>${esc(st.memo_approved_title || m.approved_title || '')}</td>
       </tr>
     </table>
   </article>`;
@@ -1032,7 +1054,7 @@ function memoDocHTML(m, emp, forPrint, sigs) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=7', location.href).href;
+  const css = new URL('style.css?v=9', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
     <link href="${DOC_FONTS}" rel="stylesheet">

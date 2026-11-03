@@ -11,6 +11,28 @@
 // =====================================================================
 'use strict';
 
+// จำนวนเงินเป็นตัวอักษรไทย เช่น 1,250.50 -> หนึ่งพันสองร้อยห้าสิบบาทห้าสิบสตางค์
+function bahtText(amount) {
+  const D = ['', 'หนึ่ง', 'สอง', 'สาม', 'สี่', 'ห้า', 'หก', 'เจ็ด', 'แปด', 'เก้า'];
+  const P = ['', 'สิบ', 'ร้อย', 'พัน', 'หมื่น', 'แสน'];
+  const read = (x, prefixed) => {
+    let out = '';
+    if (x >= 1e6) { out += read(Math.floor(x / 1e6), false) + 'ล้าน'; x %= 1e6; prefixed = true; }
+    const s = String(x);
+    for (let i = 0; i < s.length; i++) {
+      const d = +s[i]; const pos = s.length - i - 1;
+      if (!d || (x === 0)) continue;
+      if (pos === 1 && d === 1) out += 'สิบ';
+      else if (pos === 1 && d === 2) out += 'ยี่สิบ';
+      else if (pos === 0 && d === 1 && (s.length > 1 || prefixed)) out += 'เอ็ด';
+      else out += D[d] + P[pos];
+    }
+    return out;
+  };
+  const [b, st] = (Math.round(Number(amount || 0) * 100) / 100).toFixed(2).split('.').map(Number);
+  return (b ? read(b, false) : 'ศูนย์') + 'บาท' + (st ? read(st, false) + 'สตางค์' : 'ถ้วน');
+}
+
 const dmy = (iso) => { if (!iso) return ''; const [y, m, d] = iso.slice(0, 10).split('-'); return `${d}/${m}/${y}`; };
 const bkkDate = (ts) => (ts ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date(ts)) : '');
 
@@ -54,7 +76,6 @@ function docRequisition(D, budgets, sig) {
       <colgroup><col style="width:10%"><col style="width:46%"><col style="width:17%"><col style="width:3%"><col style="width:12%"><col style="width:12%"></colgroup>
       <tr><th>ITEM</th><th>DESCRIPTION</th><th>AMOUNT (BAHT)</th><th></th><th>BUDGET</th><th>APPROVE</th></tr>
       ${rows.join('')}
-      <tr><td></td><td class="r b">TOTAL</td><td class="r b">THB ${money(claim.total_amount)}</td><td></td><td></td><td></td></tr>
     </table>
     <table class="grid req-sign">
       <tr><th>REQUEST BY / DATE</th><th>APPROVE BY /DATE</th><th>PAY BY /DATE</th><th>RECEIVE BY DATE</th></tr>
@@ -74,7 +95,7 @@ function docEntertain(D, it, sig) {
   const d = it.details || {};
   const sub = bkkDate(claim.submitted_at);
   const [y, m, dd] = sub ? sub.split('-') : ['', '', ''];
-  const box = (label) => `<span class="box">${d.kind === label ? 'x' : '&nbsp;'}</span> ${label}`;
+  const box = (kind, label) => `<span class="box">${d.kind === kind ? 'x' : '&nbsp;'}</span>&nbsp; ${label}`;
   const ceo = Number(it.amount_thb) > 10000;
   return `<section class="doc-page doc-ent">
     <div class="doc-ref">Ref. ${esc(claim.ref_no)} / รายการที่ ${it.line_no}</div>
@@ -84,7 +105,7 @@ function docEntertain(D, it, sig) {
     <p>เรื่อง&nbsp; ขออนุมัติเงินค่าเลี้ยงรับรอง</p>
     <p>เรียน&nbsp; กรรมการผู้จัดการ/กรรมการ</p>
     <p class="gap">ด้วยข้าพเจ้า ${fill(emp.name_en || emp.full_name, 'w45')} มีความประสงค์ขออนุมัติเงินค่าเลี้ยงรับรอง ดังรายละเอียดต่อไปนี้</p>
-    <p class="boxes">${box('อาหารและเครื่องดื่ม')}&emsp;&emsp;${box('ที่พัก')}&emsp;&emsp;${box('อื่นๆ')}</p>
+    <p class="boxes">${box('อาหารและเครื่องดื่ม', 'ค่าอาหารและเครื่องดื่ม')}&emsp;&emsp;&emsp;${box('ที่พัก', 'ค่าที่พัก')}&emsp;&emsp;&emsp;${box('อื่นๆ', 'อื่นๆ')} ${fill('', 'w30')}</p>
     <p>ที่ ${fill(d.venue, 'w45')} เพื่อรับรองคุณ ${fill(d.guest_name, 'w30')}</p>
     <p>บริษัท ${fill(d.guest_company, 'w45')} มาจาก ${fill(d.guest_from, 'w30')}</p>
     <p>ประเทศ ${fill(d.country, 'w45')} Ref. Job # ${fill(d.job_ref, 'w30')}</p>
@@ -106,45 +127,74 @@ function docEntertain(D, it, sig) {
   </section>`;
 }
 
-// 3) แบบขอเบิกเงินชดเชยกรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงาน
+// 3) แบบขอเบิกเงินชดเชยกรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงาน (ตามแบบฟอร์ม Ent-Gas 2023)
+const EN_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const TH_MON_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+const dMonYY = (iso) => { if (!iso) return ''; const [y, m, d] = iso.slice(0, 10).split('-'); return `${+d}-${EN_MON[+m - 1]}-${y.slice(2)}`; };
+const thb = (n) => (n || n === 0 ? `THB${money(n)}` : '');
+
 function docGas(D, gasItems, sig) {
   const { claim, emp } = D;
+  const st = S.settings || {};
   const trips = gasItems.flatMap((it) => (it.details && it.details.trips) || []);
   const plate = (gasItems.find((it) => it.details && it.details.car_plate) || { details: {} }).details.car_plate;
-  const [cy] = claim.claim_month.split('-').map(Number);
+  const [cy, cm] = claim.claim_month.split('-').map(Number);
   const fuel = trips.reduce((s, t) => s + (num(t.fuel) || 0), 0);
   const km = trips.reduce((s, t) => s + (num(t.km) || 0), 0);
-  const rows = trips.map((t) => `<tr><td class="c">${esc(dmy(t.date))}</td><td class="r">${t.fuel ? money(t.fuel) : ''}</td>
-    <td class="r">${esc(t.liters || '')}</td><td>${esc(t.purpose || '')}</td><td>${esc(t.out_from || '')}</td><td>${esc(t.out_to || '')}</td>
-    <td>${esc(t.back_from || '')}</td><td>${esc(t.back_to || '')}</td><td class="r">${esc(t.km || '')}</td></tr>`);
-  while (rows.length < 10) rows.push('<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
+  const liters = (v) => { const n = num(v); return n == null ? '' : n.toFixed(3); };
+  const rows = trips.map((t) => `<tr class="data"><td class="r">${esc(dMonYY(t.date))}</td><td class="c">${t.fuel ? thb(num(t.fuel)) : ''}</td>
+    <td class="c">${esc(liters(t.liters))}</td><td>${esc(t.purpose || '')}</td><td class="c">${esc(t.out_from || '')}</td><td class="c">${esc(t.out_to || '')}</td>
+    <td class="c">${esc(t.back_from || '')}</td><td class="c">${esc(t.back_to || '')}</td><td class="c">${esc(t.km || '')}</td></tr>`);
+  while (rows.length < 20) rows.push('<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
+  const sub = bkkDate(claim.submitted_at);
+  const [sy, sm, sd] = sub ? sub.split('-') : ['', '', ''];
   return `<section class="doc-page doc-gas">
     <div class="doc-ref">Ref. ${esc(claim.ref_no)}</div>
-    <p class="r small">SINO Logistics Corporation Public Company Limited 1011 Supalai Grand Tower 7th Floor Unit 05, Rama 3 Road, Chongnonsee, Yannawa, Bangkok, 10120 Thailand</p>
-    <h2 class="c">แบบขอเบิกเงินชดเชยกรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงาน</h2>
-    <p>งวดประจำเดือน ${fill(monthLabel(claim.claim_month), 'w20')}&emsp;ปี พ.ศ. ${fill(cy + 543, 'w10')}&emsp;เลขทะเบียนรถ ${fill(plate, 'w15')}</p>
-    <p>เรียน&nbsp; ผู้บังคับบัญชา</p>
-    <p>ชื่อ-สกุล : ${fill(emp.full_name, 'w30')}&emsp;รหัสพนักงาน : ${fill(emp.emp_code, 'w10')}&emsp;ตำแหน่ง : ${fill(emp.position_title, 'w20')}</p>
-    <p>ฝ่าย : ${fill(emp.department, 'w20')}&emsp;แผนก : ${fill(emp.department, 'w20')}&emsp;บริษัท : ${fill(emp.company, 'w30')}</p>
-    <p class="ind">มีความประสงค์ ขอเบิกเงินชดเชย กรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงานตามรายละเอียด ดังนี้</p>
-    <table class="grid gas-table">
+    <div class="gas-head">
+      <img class="gas-logo" src="${LOGO_URL()}" alt="SINO Logistics Corporation">
+      <div>SINO Logistics Corporation Public Company Limited<br>
+        1011 Supalai Grand Tower 7th Floor Unit 05, Rama 3 Road, Chongnonsee, Yannawa, Bangkok, 10120 Thailand</div>
+    </div>
+    <p class="gas-title">แบบขอเบิกเงินชดเชยกรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงาน</p>
+    <table class="gas-period"><tr>
+      <th>งวดประจำเดือน</th><td>${esc(TH_MONTHS[cm - 1])}</td><th>ปี พ.ศ.</th><td>${cy + 543}</td>
+      <th class="r">เลขทะเบียนรถ</th><td>${esc(plate || '')}</td></tr></table>
+    <p class="b" style="margin:4px 0">เรียน&nbsp;&nbsp; ผู้บังคับบัญชา</p>
+    <table class="gas-info">
+      <tr><td>ชื่อ-สกุล : ${esc(emp.full_name || '')}</td><td>รหัสพนักงาน : ${esc(emp.emp_code || '')}</td><td>ตำแหน่ง : ${esc(emp.position_title || '')}</td></tr>
+      <tr><td>ฝ่าย : ${esc(emp.department || '')}</td><td>แผนก : ${esc(emp.department || '')}</td><td>บริษัท : ${esc(emp.company || '')}</td></tr>
+    </table>
+    <p class="gas-intro">มีความประสงค์ ขอเบิกเงินชดเชย กรณีนำรถยนต์ส่วนตัวมาใช้ปฏิบัติงานตามรายละเอียด ดังนี้</p>
+    <table class="gas-table">
+      <colgroup><col style="width:8%"><col style="width:10%"><col style="width:7%"><col style="width:17%"><col style="width:11.5%"><col style="width:11.5%"><col style="width:11.5%"><col style="width:11.5%"><col style="width:12%"></colgroup>
       <tr><th rowspan="2">วัน เดือน ปี</th><th rowspan="2">ค่าน้ำมัน (บาท)</th><th rowspan="2">จำนวน (ลิตร)</th>
         <th rowspan="2">เพื่อปฏิบัติงาน (ระบุจังหวัด / บริษัท)</th><th colspan="2">เที่ยวไป (ระบุสถานที่)</th>
         <th colspan="2">เที่ยวกลับ (ระบุสถานที่)</th><th>ระยะทางรวม</th></tr>
       <tr><th>เริ่มต้น</th><th>สิ้นสุด</th><th>เริ่มต้น</th><th>สิ้นสุด</th><th>(กิโลเมตร)</th></tr>
       ${rows.join('')}
-      <tr><td class="b">Total</td><td class="r b">${money(fuel)}</td><td colspan="6" class="r b">ระยะทางรวม (กิโลเมตร)</td><td class="r b">${km || ''}</td></tr>
+      <tr><td>Total</td><td class="c">${thb(fuel)}</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr class="grey"><td colspan="8" class="c blue b">ระยะทางรวม (กิโลเมตร)</td><td class="r blue b">${km ? Math.round(km * 10) / 10 : ''}</td></tr>
+      <tr><td colspan="8">หมายเหตุ :</td><td></td></tr>
+      <tr><td colspan="8">&nbsp;</td><td></td></tr>
+      <tr class="grey"><td colspan="8">&nbsp;</td><td></td></tr>
     </table>
-    <p>หมายเหตุ : ${fill('', 'w60')}</p>
     <table class="gas-foot"><tr>
-      <td class="hr-box"><b>สำหรับ HR Share Service</b><br>วันที่รับเอกสาร ...............................<br>บันทึกเพิ่มเติม ..............................................<br>หมายเหตุ :</td>
-      <td>
-        <p>พนักงานผู้ขอเบิก ${sigLine(sig.emp, 'w40')}</p>
-        <p class="c">( ${esc(emp.full_name || '')} )</p>
-        <p class="c">วันที่ ${esc(dmy(bkkDate(claim.submitted_at)))}</p>
-        <p style="margin-top:18px">ผู้มีอำนาจอนุมัติ ..........................................</p>
-        <p class="c">(กรรมการผู้จัดการ)&emsp;(.................................)</p>
-        <p class="c">วันที่ ............... / ............ / ..............</p>
+      <td class="hr">
+        <table class="hr-box">
+          <tr><th colspan="4">สำหรับ HR Share Service</th></tr>
+          <tr><td class="red">วันที่รับเอกสาร</td><td></td><td class="red">บันทึกเพิ่มเติม</td><td></td></tr>
+        </table>
+        <div class="red" style="margin-top:4px">หมายเหตุ :</div>
+      </td>
+      <td class="sigs">
+        <table class="gas-sign">
+          <tr><td class="lbl">พนักงานผู้ขอเบิก</td><td class="line">${sigImg(sig.emp)}</td></tr>
+          <tr><td></td><td class="c">(....${esc(emp.full_name || '')}.......)</td></tr>
+          <tr><td class="r">วันที่</td><td>.......${esc(sd ? String(+sd) : '')}........ / .........${esc(sm ? TH_MON_SHORT[+sm - 1] : '')}............ / .....${esc(sy)}.........</td></tr>
+          <tr><td class="lbl" style="padding-top:12px">ผู้มีอำนาจอนุมัติ</td><td class="line"></td></tr>
+          <tr><td class="red">(กรรมการผู้จัดการ)</td><td class="c">(......${esc(st.ceo_name_th || 'นันท์มนัส วิทยศักดิ์พันธ์')}.........)</td></tr>
+          <tr><td class="r">วันที่</td><td>............... / ............ / ..............</td></tr>
+        </table>
       </td></tr></table>
   </section>`;
 }
@@ -166,8 +216,8 @@ function docSubstitute(D, subItems, sig) {
       <colgroup><col style="width:16%"><col style="width:52%"><col style="width:16%"><col style="width:16%"></colgroup>
       <tr><th>วัน เดือน ปี</th><th>รายละเอียดรายจ่าย</th><th>จำนวนเงิน</th><th>หมายเหตุ</th></tr>
       ${rows.join('')}
-      <tr><td colspan="2" class="r b">รวมทั้งสิ้น</td><td class="r b">${money(total)}</td><td></td></tr>
     </table>
+    <table class="sub-total"><tr><td class="words">(${esc(bahtText(total))})</td><td class="lbl">รวมทั้งสิ้น</td><td class="amt">${money(total)}</td></tr></table>
     <p>ข้าพเจ้า ${fill(emp.full_name, 'w30')} (ผู้เบิกจ่าย)&emsp;ตำแหน่ง ${fill(emp.position_title, 'w20')}</p>
     <p>ขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ และข้าพเจ้าได้จ่ายไปในงานของทาง
       บริษัท โดยแท้ ตั้งแต่วันที่ ${fill(dmy(dates[0]), 'w15')} ถึงวันที่ ${fill(dmy(dates[dates.length - 1]), 'w15')}</p>
@@ -207,7 +257,7 @@ async function openClaimDocs(D) {
   if (subs.length) pages.push(docSubstitute(D, subs, sig));
   D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`));
 
-  const css = new URL('style.css?v=7', location.href).href;
+  const css = new URL('style.css?v=9', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
