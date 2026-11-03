@@ -1,5 +1,5 @@
 // =====================================================================
-// SINO ทำเบิกออนไลน์ — ส่วนที่ 2–6: ล็อกอิน, ใบเบิก, ยื่นเบิก, อนุมัติ, Memo, เอกสารดาวน์โหลด, ลายเซ็น
+// SINO ทำเบิกออนไลน์ — ส่วนที่ 2–9: ใบเบิก, ยื่นเบิก, อนุมัติ, Memo, เอกสาร, ลายเซ็น, ทำเบิกแทน, กติกาการเบิก
 // ไฟล์นี้ไม่มีรหัสผ่านหรือ key (key อยู่ใน config.js)
 // =====================================================================
 'use strict';
@@ -10,7 +10,8 @@ const sb = (cfg.SUPABASE_URL && cfg.SUPABASE_KEY && !cfg.SUPABASE_KEY.startsWith
   ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY)
   : null;
 
-const S = { session: null, profile: null, settings: {}, refs: { cats: [], gls: [], levels: {} } };
+const S = { session: null, profile: null, settings: {}, delegates: [], refs: { cats: [], gls: [], levels: {} } };
+const canActFor = (empId) => empId === (S.profile && S.profile.id) || S.delegates.some((d) => d.id === empId);
 const svpEnd = () => (S.settings.workflow_end || 'full') === 'svp';
 const BUCKET = 'receipts';
 
@@ -55,11 +56,12 @@ const STATUS = {
 const chip = (st) => { const s = STATUS[st] || [st, '']; return `<span class="chip ${s[1]}">${esc(s[0])}</span>`; };
 const ROUTE_LABEL = { general: 'ค่าใช้จ่ายทั่วไป', welfare: 'สวัสดิการ' };
 const RECEIPT_TYPES = [
-  ['tax_invoice', 'ใบกำกับภาษี'], ['receipt', 'ใบเสร็จรับเงิน'],
-  ['cash_bill', 'บิลเงินสด'], ['substitute', 'ใบรับรองแทนใบเสร็จ'],
+  ['tax_invoice', 'ใบกำกับภาษีเต็มรูป (ตัวจริง)'], ['e_tax', 'e-Tax Invoice'],
+  ['receipt', 'ใบเสร็จรับเงิน'], ['cash_bill', 'บิลเงินสด'], ['substitute', 'ไม่มีใบเสร็จ (ใช้ใบรับรองแทน)'],
 ];
+const PAY_METHODS = [['transfer', 'โอนเงิน'], ['card', 'บัตรเครดิต'], ['cash', 'เงินสด'], ['easypass', 'Easy Pass / M-Flow']];
 const FILE_KINDS = [
-  ['receipt', 'ใบเสร็จ / ใบกำกับภาษี'], ['substitute_form', 'ใบรับรองแทนใบเสร็จ'],
+  ['receipt', 'ใบเสร็จ / ใบกำกับภาษี'], ['payment_proof', 'หลักฐานการจ่าย (สลิป / Statement)'], ['substitute_form', 'ใบรับรองแทนใบเสร็จ'],
   ['entertain_form', 'บันทึกขออนุมัติเลี้ยงรับรอง'], ['memo', 'Memo ที่อนุมัติแล้ว'],
   ['map', 'แผนที่ระยะทาง'], ['statement', 'Statement บัตรเครดิต'], ['other', 'อื่นๆ'],
 ];
@@ -173,12 +175,14 @@ async function loadMe() {
     return false;
   }
   S.profile = p;
-  const [cats, gls, levels, settings] = await Promise.all([
+  const [cats, gls, levels, settings, delegs] = await Promise.all([
     sb.from('expense_categories').select('*').eq('active', true).order('sort_order'),
     sb.from('gl_codes').select('*').eq('active', true).order('code'),
     sb.from('position_levels').select('*'),
     sb.from('app_settings').select('key, value'),
+    sb.from('delegates').select('employee:profiles!delegates_employee_id_fkey(id, full_name, level_code)').eq('delegate_id', p.id),
   ]);
+  S.delegates = ((delegs && delegs.data) || []).map((d) => d.employee).filter(Boolean);
   S.settings = Object.fromEntries((settings.data || []).map((x) => [x.key, x.value]));
   S.refs.cats = cats.data || [];
   S.refs.gls = gls.data || [];
@@ -233,11 +237,11 @@ async function viewHome() {
 
   const [bud, claims] = await Promise.all([
     sb.rpc('budget_summary', { p_employee: uid, p_month: thisMonth }),
-    sb.from('claims').select('id, ref_no, claim_month, route, project, status, total_amount, created_at')
-      .eq('employee_id', uid).order('created_at', { ascending: false }).limit(50),
+    sb.from('claims').select('id, ref_no, claim_month, route, project, status, total_amount, created_at, employee_id, employee:profiles!claims_employee_id_fkey(full_name)')
+      .or(`employee_id.eq.${uid},created_by.eq.${uid}`).order('created_at', { ascending: false }).limit(50),
   ]);
 
-  const names = { ENTERTAIN: 'Entertain', GAS: 'Gas', PHONE: 'Phone', PARKING: 'Parking' };
+  const names = { ENTERTAIN: 'Entertain (รวมของขวัญ)', GAS: 'Gas', PHONE: 'Phone' };
   let budHtml;
   if (!S.profile.level_code) {
     budHtml = `<p class="muted small">ยังไม่ได้กำหนดระดับตำแหน่ง จึงยังไม่แสดงวงเงิน (แจ้ง admin)</p>`;
@@ -261,7 +265,7 @@ async function viewHome() {
     <li><a href="#/claim/${c.id}">
       <span><span class="ref">${esc(c.ref_no)}</span></span>
       <span class="amt">${money(c.total_amount)}</span>
-      <span class="small muted">${esc(monthLabel(c.claim_month))} · ${esc(c.project || ROUTE_LABEL[c.route])}</span>
+      <span class="small muted">${esc(monthLabel(c.claim_month))} · ${esc(c.project || 'ใบเบิก')}${c.employee_id !== uid ? ` · ทำแทน ${esc(c.employee ? c.employee.full_name : '')}` : ''}</span>
       <span>${chip(c.status)}</span>
     </a></li>`).join('');
 
@@ -288,10 +292,10 @@ function viewNew() {
     <p><a href="#/" class="text-btn">‹ ใบเบิกของฉัน</a></p>
     <h1>สร้างใบเบิกใหม่</h1>
     <form id="newForm" class="panel" novalidate>
-      <label>ประเภทใบเบิก <span class="req">*</span></label>
-      <label class="check"><input type="radio" name="route" value="general" checked> ค่าใช้จ่ายทั่วไป (Entertain, น้ำมัน, โทรศัพท์, เดินทาง ฯลฯ)</label>
-      <label class="check"><input type="radio" name="route" value="welfare"> สวัสดิการ (ฟิตเนส, ตัดแว่น)</label>
-      <p class="hint">สวัสดิการต้องเบิกแยกใบ เพราะต้องผ่าน HR ก่อนถึงบัญชี</p>
+      ${S.delegates.length ? `<label for="owner">ทำเบิกให้ <span class="req">*</span></label>
+      <select id="owner"><option value="${S.profile.id}">ตัวเอง (${esc(S.profile.full_name || '')})</option>
+        ${S.delegates.map((d) => `<option value="${d.id}">${esc(d.full_name || '')}</option>`).join('')}</select>
+      <p class="hint">ทำแทนแล้วกดยื่นแทนได้เลย ใบเบิกจะเป็นชื่อเจ้าของ และไปให้ SVP ของเจ้าของอนุมัติ</p>` : ''}
 
       <label for="month">เดือนที่เบิก (เดือนของใบเสร็จ) <span class="req">*</span></label>
       <select id="month">
@@ -304,7 +308,7 @@ function viewNew() {
       <input id="project" placeholder="เช่น Phone และค่าน้ำมันส่วนเกิน">
 
       <label for="payto">จ่ายให้ (PAY TO)</label>
-      <input id="payto" value="${esc(S.profile.full_name || '')}">
+      <input id="payto" value="${esc(S.profile.full_name || '')}" placeholder="เว้นว่าง = ชื่อเจ้าของใบเบิก">
 
       <div class="actions"><button class="btn" type="submit">สร้างใบเบิก</button></div>
     </form>`;
@@ -314,10 +318,12 @@ function viewNew() {
     const btn = e.target.querySelector('button');
     btn.disabled = true;
     const { data, error } = await sb.from('claims').insert({
-      route: e.target.querySelector('input[name=route]:checked').value,
+      employee_id: document.getElementById('owner') ? document.getElementById('owner').value : S.profile.id,
       claim_month: document.getElementById('month').value,
       project: document.getElementById('project').value.trim() || null,
-      pay_to: document.getElementById('payto').value.trim() || null,
+      pay_to: (() => { const o = document.getElementById('owner'); const v = document.getElementById('payto').value.trim();
+        if (o && o.value !== S.profile.id) { const d = S.delegates.find((x) => x.id === o.value); return d ? d.full_name : v; }
+        return v || null; })(),
     }).select('id').single();
     btn.disabled = false;
     if (error) { toast(errMsg(error)); return; }
@@ -361,8 +367,9 @@ async function viewClaim(id) {
     return;
   }
   const { claim, emp, memos, items, atts, urls, logs } = D;
-  const mine = claim.employee_id === S.profile.id;
-  const editable = mine && ['draft', 'returned'].includes(claim.status);
+  const mine = canActFor(claim.employee_id) || claim.created_by === S.profile.id;
+  const editable = canActFor(claim.employee_id) && ['draft', 'returned'].includes(claim.status);
+  const canCancel = mine && !['draft', 'cancelled', 'paid', 'rejected'].includes(claim.status);
   const role = S.profile.role;
   const canAct = !mine && (
     (claim.status === 'pending_approval' && emp.supervisor_id === S.profile.id) ||
@@ -370,7 +377,7 @@ async function viewClaim(id) {
     (claim.status === 'pending_fhr' && S.profile.is_fhr) ||
     (claim.status === 'pending_hr' && role === 'hr') ||
     (['pending_accounting', 'pending_payment'].includes(claim.status) && role === 'accounting'));
-  const canAddMemo = mine && ['pending_approval', 'pending_ceo', 'pending_hr', 'pending_accounting'].includes(claim.status);
+  const canAddMemo = canActFor(claim.employee_id) && ['pending_approval', 'pending_ceo', 'pending_fhr', 'pending_hr', 'pending_accounting'].includes(claim.status);
   const claimFiles = atts.filter((a) => !a.item_id);
 
   const fileLinks = (itemId) => atts.filter((a) => a.item_id === itemId).map((a) =>
@@ -383,7 +390,7 @@ async function viewClaim(id) {
     return `<div class="item">
       <div class="head"><span>${it.line_no}. ${esc(cat ? cat.name : it.category_code)}</span><span>${money(it.amount_thb)}</span></div>
       <div>${esc(it.description)}</div>
-      <div class="meta">ใบเสร็จ ${fmtDate(it.receipt_date)}${it.receipt_no ? ' เลขที่ ' + esc(it.receipt_no) : ''} · GL ${esc(it.gl_code || 'ยังไม่เลือก')}${fx}</div>
+      <div class="meta">ใบเสร็จ ${fmtDate(it.receipt_date)}${it.receipt_no ? ' เลขที่ ' + esc(it.receipt_no) : ''} ${it.gl_code ? ' · GL ' + esc(it.gl_code) : ''}${fx}</div>
       <div class="files">${fileLinks(it.id) || '<span class="small muted">ยังไม่มีไฟล์แนบ</span>'}</div>
       ${editable ? `<div class="tools">
         <button type="button" data-edit="${it.id}">แก้ไข</button>
@@ -400,9 +407,10 @@ async function viewClaim(id) {
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span class="ref">${esc(claim.ref_no)}</span>${chip(claim.status)}
     </div>
-    <h1>${esc(claim.project || ROUTE_LABEL[claim.route])}</h1>
-    <p class="muted small" style="margin-top:-8px">${esc(ROUTE_LABEL[claim.route])} · เดือน${esc(monthLabel(claim.claim_month))} · Cost center ${esc(claim.cost_center)}</p>
-    ${!mine ? `<p><b>${esc(emp.full_name || '-')}</b> <span class="muted small">${esc(emp.emp_code || '')} ${esc(emp.position_title || '')}</span></p>` : ''}
+    <h1>${esc(claim.project || 'ใบเบิก')}</h1>
+    <p class="muted small" style="margin-top:-8px">เดือน${esc(monthLabel(claim.claim_month))} · Cost center ${esc(claim.cost_center)}</p>
+    ${claim.employee_id !== S.profile.id ? `<p><b>${esc(emp.full_name || '-')}</b> <span class="muted small">${esc(emp.emp_code || '')} ${esc(emp.position_title || '')}</span></p>` : ''}
+    ${claim.status === 'cancelled' ? `<div class="note err"><b>ยกเลิกแล้ว:</b> ${esc(claim.cancel_reason || '')}</div>` : ''}
     ${claim.status === 'rejected' && claim.return_note ? `<div class="note err"><b>ไม่อนุมัติ:</b> ${esc(claim.return_note)}</div>` : ''}
 
     ${claim.status === 'returned' && claim.return_note ? `<div class="note err"><b>ส่งกลับแก้ไข:</b> ${esc(claim.return_note)}</div>` : ''}
@@ -450,6 +458,8 @@ async function viewClaim(id) {
       </div>`).join('')}` : ''}
 
     ${canAct ? decidePanel(claim, memos) : ''}
+    ${canCancel ? `<div class="actions"><button class="btn danger" type="button" id="cancelClaim">ยกเลิกใบเบิกนี้</button></div>
+      <p class="hint">ยกเลิกแล้วต้องสร้างใบใหม่ ระบบจะแจ้งให้ SVP เห็นพร้อมเหตุผล</p>` : ''}
 
     ${editable ? `<div class="actions">
       <button class="btn" type="button" id="submitClaim">ยื่นเบิก</button>
@@ -461,6 +471,14 @@ async function viewClaim(id) {
     <ul class="log">${logHtml}</ul>`;
 
   if (canAct) bindDecide(claim);
+  const cc = document.getElementById('cancelClaim');
+  if (cc) cc.addEventListener('click', async () => {
+    const reason = prompt('เหตุผลที่ยกเลิกใบเบิกนี้');
+    if (reason === null) return;
+    if (!reason.trim()) { toast('กรุณาระบุเหตุผล'); return; }
+    const { error } = await sb.rpc('cancel_claim', { p_claim: claim.id, p_reason: reason.trim() });
+    if (error) toast(errMsg(error)); else { toast('ยกเลิกใบเบิกแล้ว'); viewClaim(claim.id); }
+  });
   const dl = document.getElementById('dlDocs');
   if (dl) dl.addEventListener('click', () => openClaimDocs(D));
   $app.querySelectorAll('[data-printmemo]').forEach((b) => b.addEventListener('click', () => {
@@ -481,7 +499,7 @@ async function viewClaim(id) {
       if (!f) { toast('เลือกไฟล์ Memo ก่อน'); return; }
       e.target.disabled = true;
       try {
-        await uploadFile(claim.id, null, f, 'memo', 0);
+        await uploadFile(claim, null, f, 'memo', 0);
         toast('แนบ Memo แล้ว');
         viewClaim(claim.id);
       } catch (err) { toast(errMsg(err)); e.target.disabled = false; }
@@ -543,7 +561,7 @@ async function viewClaim(id) {
 }
 
 // ---------------------------------------------------------------------
-// ฟอร์มรายการ (เพิ่ม / แก้ไข)
+// ฟอร์มรายการ (เพิ่ม / แก้ไข) — ตามกติกาการเบิกฉบับยืนยัน
 // ---------------------------------------------------------------------
 const TRAVEL_FIELDS = [
   ['destination', 'ปลายทาง (จังหวัด/ประเทศ)', 'text', true],
@@ -562,12 +580,14 @@ function detailFields(code) {
       ['guest_from', 'มาจาก', 'text', false],
       ['country', 'ประเทศ', 'text', false],
       ['job_ref', 'Ref. Job #', 'text', false],
-      ['guests_count', 'จำนวนผู้รับรอง (คน)', 'number', false],
       ['purpose', 'วัตถุประสงค์ในการเลี้ยงรับรอง', 'textarea', true],
     ];
     case 'GIFT': return [
-      ['guest_name', 'ผู้รับของขวัญ', 'text', true],
+      ['guest_name', 'ผู้รับของขวัญ (1 ลูกค้าต่อ 1 รายการ)', 'text', true],
       ['guest_company', 'บริษัทลูกค้า', 'text', true],
+      ['venue', 'ร้านที่ซื้อ', 'text', true],
+      ['event_date', 'วันที่ให้ของขวัญ', 'date', true],
+      ['job_ref', 'Ref. Job #', 'text', false],
       ['purpose', 'โอกาส / วัตถุประสงค์', 'textarea', true],
     ];
     case 'PHONE': return [['phone_period', 'งวดบิล (เช่น ต.ค. 2569)', 'text', true]];
@@ -582,45 +602,57 @@ const TRIP_FIELDS = [
   ['back_from', 'เที่ยวกลับ: เริ่มต้น', 'text'], ['back_to', 'เที่ยวกลับ: สิ้นสุด', 'text'],
   ['km', 'ระยะทางรวม (กม.)', 'number'],
 ];
+const OVERSEAS_TRAVEL = ['TRANSPORT', 'PER_DIEM', 'HOTEL', 'TRAVEL_FOOD'];
+
+// สิ่งที่ต้องแนบของรายการนี้ (ใช้ทั้งแสดงผลและตรวจก่อนบันทึก)
+function itemNeeds(d) {
+  const needProof = (d.receipt_type !== 'tax_invoice' && !(d.category_code === 'PHONE' && d.receipt_type === 'e_tax'))
+    || ['card', 'easypass'].includes(d.details.pay);
+  return {
+    proof: needProof,
+    map: d.category_code === 'GAS',
+    company: d.category_code !== 'PHONE' && d.receipt_type !== 'substitute',
+    substituteForm: d.receipt_type === 'substitute'
+      || (['ENTERTAIN', 'GIFT'].includes(d.category_code) && ['receipt', 'cash_bill'].includes(d.receipt_type)),
+  };
+}
 
 function openItemForm(D, item) {
   const { claim, atts } = D;
-  const cats = S.refs.cats.filter((c) => c.route === claim.route);
+  const cats = S.refs.cats;
   const box = document.getElementById('itemForm');
   const addBtn = document.getElementById('addItem');
   if (addBtn) addBtn.hidden = true;
+  const have = (kind) => item && atts.some((a) => a.item_id === item.id && a.kind === kind);
 
   const draft = item ? {
     category_code: item.category_code, gl_code: item.gl_code || '', description: item.description,
-    receipt_date: item.receipt_date || '', receipt_no: item.receipt_no || '', receipt_type: item.receipt_type || '',
+    receipt_date: item.receipt_date || '', receipt_no: item.receipt_no || '', receipt_type: item.receipt_type || 'tax_invoice',
     is_overseas: item.is_overseas, currency: item.currency, amount_foreign: item.amount_foreign ?? '',
     fx_rate: item.fx_rate ?? '', fx_source: item.fx_source || 'BOT', amount_thb: item.amount_thb,
     details: { ...(item.details || {}) },
   } : {
     category_code: cats[0] ? cats[0].code : '', gl_code: '', description: '', receipt_date: '', receipt_no: '',
     receipt_type: 'tax_invoice', is_overseas: false, currency: 'USD', amount_foreign: '', fx_rate: '',
-    fx_source: 'BOT', amount_thb: '', details: {},
+    fx_source: 'BOT', amount_thb: '', details: { pay: 'transfer' },
   };
-  if (!draft.gl_code) { const c = catOf(draft.category_code); draft.gl_code = (c && c.default_gl) || ''; }
   if (!Array.isArray(draft.details.trips)) draft.details.trips = [];
-  if (draft.category_code === 'GAS' && !draft.details.car_plate) draft.details.car_plate = S.profile.car_plate || '';
+  if (draft.category_code === 'GAS' && !draft.details.car_plate) draft.details.car_plate = (D.emp && D.emp.car_plate) || '';
 
   box.innerHTML = `
     <section class="panel" id="itemPanel">
       <h3 style="margin-top:0">${item ? 'แก้ไขรายการ' : 'เพิ่มรายการ'}</h3>
       <div id="ifBody"></div>
-      <label for="f_kind">แนบไฟล์ (รูปถ่ายหรือ PDF)</label>
-      <select id="f_kind">${FILE_KINDS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
-      <input id="f_files" type="file" accept="image/*,application/pdf" multiple style="margin-top:8px">
-      <p class="hint">${item ? `แนบแล้ว ${atts.filter((a) => a.item_id === item.id).length} ไฟล์ · ` : ''}เลือกได้หลายไฟล์ ไฟล์ละไม่เกิน 10 MB</p>
+      <div id="ifFiles"></div>
       <div id="ifWarn"></div>
       <div class="actions">
         <button class="btn" type="button" id="ifSave">บันทึกรายการ</button>
         <button class="btn ghost" type="button" id="ifCancel">ยกเลิก</button>
       </div>
     </section>`;
-
   const body = document.getElementById('ifBody');
+  const filesBox = document.getElementById('ifFiles');
+  const picked = {};   // kind -> FileList ที่เลือกไว้ (เก็บไว้เมื่อฟอร์มวาดใหม่)
 
   function field(id, label, type, value, req, opts) {
     const r = req ? ' <span class="req">*</span>' : '';
@@ -633,49 +665,74 @@ function openItemForm(D, item) {
     return `<label for="${id}">${esc(label)}${r}</label><input id="${id}" type="${type}" value="${esc(value)}"${im}>`;
   }
 
-  function rateHint() {
-    const lv = S.refs.levels[S.profile.level_code];
-    if (!lv) return '';
-    if (draft.category_code === 'PER_DIEM') return `<p class="hint">สิทธิ์เบี้ยเลี้ยง: ในประเทศ ${money(lv.per_diem_domestic)} / ต่างประเทศ ${money(lv.per_diem_overseas)} บาทต่อวัน</p>`;
-    if (draft.category_code === 'HOTEL') return `<p class="hint">ที่พักไม่เกิน: ต่างจังหวัด ${lv.hotel_domestic ? money(lv.hotel_domestic) : 'N/A'} / ต่างประเทศ ${lv.hotel_overseas ? money(lv.hotel_overseas) : 'N/A'} บาทต่อคืน</p>`;
-    if (draft.category_code === 'GAS') return `<p class="hint">รถส่วนตัว 8 บาท/กม. · กรุงเทพ–แหลมฉบัง เหมาจ่าย 1,000 บาท/เที่ยว (รวมทางด่วนแล้ว) · แนบแผนที่ระยะทางทุกครั้ง</p>`;
+  function hint() {
+    const lv = S.refs.levels[D.emp && D.emp.level_code];
+    const c = draft.category_code;
+    if (c === 'PER_DIEM' && lv) return `<p class="hint">สิทธิ์เบี้ยเลี้ยง: ในประเทศ ${money(lv.per_diem_domestic)} / ต่างประเทศ ${money(lv.per_diem_overseas)} บาทต่อวัน</p>`;
+    if (c === 'HOTEL' && lv) return `<p class="hint">ที่พักไม่เกิน: ต่างจังหวัด ${lv.hotel_domestic ? money(lv.hotel_domestic) : 'N/A'} / ต่างประเทศ ${lv.hotel_overseas ? money(lv.hotel_overseas) : 'N/A'} บาทต่อคืน</p>`;
+    if (c === 'GAS') return '<p class="hint">ใช้ยอดตามใบกำกับภาษีเต็มรูปของปั๊ม และแนบแผนที่เส้นทางทุกครั้ง</p>';
+    if (c === 'PHONE') return '<p class="hint">เบิกได้เดือนละครั้ง ใบกำกับเป็นชื่อพนักงานได้ · เกินวงเงิน (เช่น roaming) ต้องแนบ Memo ขออนุมัติเดินทางต่างประเทศ</p>';
+    if (c === 'GIFT') return '<p class="hint">1 รายการต่อ 1 ลูกค้า · ใบเสร็จไม่ควรเกิน 2,000 บาทต่อใบ · หักจากงบ Entertain</p>';
+    if (c === 'EXPRESSWAY') return '<p class="hint">ค่าทางด่วนไม่มีวงเงิน ระบบจะสร้าง Memo ให้ทุกครั้ง · ใช้ Easy Pass ต้องแนบ Statement</p>';
+    if (c === 'FITNESS') return '<p class="hint">สิทธิ์ 1,200 บาท/เดือน (เกินสิทธิ์ระบบตัดยอดให้อัตโนมัติ)</p>';
+    if (c === 'GLASSES') return '<p class="hint">สิทธิ์ 1,500 บาท/ปี · คอนแทคเลนส์เบิกไม่ได้ (เกินสิทธิ์ระบบตัดยอดให้อัตโนมัติ)</p>';
     return '';
   }
 
-  function render() {
-    const isGas = draft.category_code === 'GAS';
-    const d = draft.details;
-    let html = '';
-    html += field('f_cat', 'ประเภทค่าใช้จ่าย', 'select', draft.category_code, true, cats.map((c) => [c.code, c.name]));
-    html += rateHint();
-    html += field('f_gl', 'GL Code', 'select', draft.gl_code, true,
+  function glHtml() {
+    const cat = catOf(draft.category_code);
+    if (!cat) return '';
+    if (draft.is_overseas && OVERSEAS_TRAVEL.includes(draft.category_code)) return '<p class="hint">GL 710020022 ค่าเดินทางต่างประเทศ (กำหนดโดยระบบ)</p>';
+    if (cat.gl_locked) return `<p class="hint">GL ${esc(cat.default_gl)} (กำหนดโดยระบบ)</p>`;
+    if (!cat.gl_required) return '';
+    return field('f_gl', 'GL Code', 'select', draft.gl_code, true,
       [['', '— เลือก GL Code —'], ...S.refs.gls.map((g) => [g.code, `${g.code} ${g.name}`])]);
+  }
+
+  function render() {
+    const c = draft.category_code;
+    const d = draft.details;
+    const lump = c === 'FITNESS' && d.lump;
+    let html = '';
+    html += field('f_cat', 'ประเภทค่าใช้จ่าย', 'select', c, true, cats.map((x) => [x.code, x.name]));
+    html += hint();
+    html += glHtml();
     html += field('f_desc', 'รายละเอียด (DESCRIPTION)', 'text', draft.description, true);
     html += `<div class="row"><div>${field('f_rdate', 'วันที่ในใบเสร็จ', 'date', draft.receipt_date, true)}</div>
-             <div>${field('f_rno', 'เลขที่ใบเสร็จ', 'text', draft.receipt_no, false)}</div></div>`;
-    html += field('f_rtype', 'ประเภทหลักฐาน', 'select', draft.receipt_type, true, RECEIPT_TYPES);
+             <div>${field('f_rno', 'เลขที่ใบเสร็จ', 'text', draft.receipt_no, lump)}</div></div>`;
+    html += `<div class="row"><div>${field('f_rtype', 'ประเภทหลักฐาน', 'select', draft.receipt_type, true, RECEIPT_TYPES)}</div>
+             <div>${field('f_pay', 'จ่ายโดย', 'select', d.pay || 'transfer', true, PAY_METHODS.filter((p) => p[0] !== 'easypass' || c === 'EXPRESSWAY'))}</div></div>`;
+    if (itemNeeds(draft).company) {
+      html += `<label class="check" style="margin-top:12px"><input type="checkbox" id="f_company" ${d.company_ok ? 'checked' : ''}> ใบเสร็จออกในนามบริษัท มีที่อยู่และเลขผู้เสียภาษีครบ <span class="req">*</span></label>`;
+    }
 
-    // ข้อมูลเฉพาะประเภท
-    const df = detailFields(draft.category_code);
+    const df = detailFields(c);
     if (df.length) {
-      html += `<h3>ข้อมูลเพิ่มเติม</h3>`;
+      html += '<h3>ข้อมูลเพิ่มเติม</h3>';
       df.forEach(([k, l, t, req, opts]) => { html += field('d_' + k, l, t, d[k] ?? '', req, opts); });
     }
 
-    if (isGas) {
-      html += `<h3>รายละเอียดเที่ยวรถ (แบบฟอร์ม Ent-Gas)</h3>`;
+    if (c === 'GAS') {
+      html += '<h3>รายละเอียดเที่ยวรถ (แบบฟอร์ม Ent-Gas)</h3>';
       html += field('d_car_plate', 'เลขทะเบียนรถ', 'text', d.car_plate || '', true);
       d.trips.forEach((t, i) => {
-        html += `<div class="trip"><div class="head" style="display:flex;justify-content:space-between">
+        html += `<div class="trip"><div style="display:flex;justify-content:space-between">
           <b>เที่ยวที่ ${i + 1}</b><button class="text-btn red" type="button" data-rmtrip="${i}">ลบเที่ยวนี้</button></div>
           <div class="row">${TRIP_FIELDS.map(([k, l, ty]) => `<div>${field(`t_${i}_${k}`, l, ty, t[k] ?? '', ['date', 'purpose', 'km'].includes(k))}</div>`).join('')}</div></div>`;
       });
-      html += `<button class="btn ghost" type="button" id="addTrip">เพิ่มเที่ยว</button>`;
-      html += `<p class="hint">ยอดเงินของรายการนี้ = ผลรวมค่าน้ำมันทุกเที่ยว</p>`;
+      html += '<button class="btn ghost" type="button" id="addTrip">เพิ่มเที่ยว</button>';
     }
 
-    // เงินตราต่างประเทศ
-    if (claim.route === 'general') {
+    if (c === 'FITNESS') {
+      html += `<label class="check" style="margin-top:16px"><input type="checkbox" id="f_lump" ${lump ? 'checked' : ''}> จ่ายเป็นก้อน (เช่น รายปี) เบิกเฉลี่ยรายเดือน</label>`;
+      if (lump) {
+        html += `<div class="row"><div>${field('d_lump_total', 'ยอดที่จ่ายทั้งก้อน (บาท)', 'number', d.lump_total ?? '', true)}</div>
+          <div>${field('d_lump_months', 'แบ่งเบิกกี่เดือน', 'number', d.lump_months ?? '12', true)}</div></div>
+          <p class="hint">ใช้ใบเสร็จใบเดิมเบิกได้ทุกเดือนจนครบจำนวนเดือน (ใส่เลขที่ใบเสร็จให้ตรงกันทุกครั้ง)</p>`;
+      }
+    }
+
+    if (!['FITNESS', 'GLASSES', 'PHONE', 'GAS', 'EXPRESSWAY'].includes(c)) {
       html += `<label class="check" style="margin-top:16px"><input type="checkbox" id="f_ovs" ${draft.is_overseas ? 'checked' : ''}> ค่าใช้จ่ายต่างประเทศ / สกุลเงินต่างประเทศ</label>`;
     }
     if (draft.is_overseas) {
@@ -684,19 +741,37 @@ function openItemForm(D, item) {
         <div>${field('f_famt', 'ยอดเงินสกุลต่างประเทศ', 'number', draft.amount_foreign, true)}</div>
         <div>${field('f_rate', 'อัตราแลกเปลี่ยน (บาท)', 'number', draft.fx_rate, true)}</div>
         <div>${field('f_fxsrc', 'ที่มาของอัตรา', 'select', draft.fx_source, true, [['BOT', 'BOT ณ วันที่ใช้จ่าย'], ['CARD', 'ตาม Statement บัตรเครดิต']])}</div>
-      </div>`;
+      </div>
+      <p class="hint">ต้องแนบไฟล์ Memo ขออนุมัติเดินทางต่างประเทศ ในหัวข้อ "ไฟล์แนบของใบเบิก" หลังยื่น${['ENTERTAIN', 'GIFT'].includes(c) ? ' · เลี้ยงลูกค้าที่ไม่ลง Job จะรวมในใบสรุปต่างประเทศ ไม่ทำบันทึกเลี้ยงรับรอง' : ''}</p>`;
     }
-    const auto = isGas || draft.is_overseas;
+    const auto = c === 'GAS' || draft.is_overseas || lump;
     html += `<label for="f_amt">จำนวนเงิน (บาท) <span class="req">*</span></label>
       <input id="f_amt" type="number" inputmode="decimal" step="any" value="${esc(draft.amount_thb)}" ${auto ? 'readonly' : ''}>
       ${auto ? '<p class="hint">ระบบคำนวณให้อัตโนมัติ</p>' : ''}`;
-
     body.innerHTML = html;
+    renderFiles();
     recalc();
     warn();
   }
 
+  function renderFiles() {
+    const n = itemNeeds(draft);
+    const slots = [['receipt', 'รูปใบเสร็จ / ใบกำกับภาษี', true]];
+    if (n.proof) slots.push(['payment_proof', draft.details.pay === 'easypass' ? 'Statement Easy Pass / M-Flow' : 'หลักฐานการจ่าย (สลิปโอน / Statement บัตร)', true]);
+    if (n.map) slots.push(['map', 'แผนที่เส้นทาง (Google Maps)', true]);
+    slots.push(['other', 'ไฟล์อื่นๆ (ถ้ามี)', false]);
+    filesBox.innerHTML = '<h3>แนบไฟล์</h3>' + slots.map(([k, l, req]) => `
+      <label for="file_${k}">${esc(l)}${req ? ' <span class="req">*</span>' : ''}${have(k) ? ' <span class="chip ok">แนบแล้ว</span>' : ''}</label>
+      <input id="file_${k}" data-kind="${k}" type="file" accept="image/*,application/pdf" multiple>
+      ${picked[k] && picked[k].length ? `<p class="hint">เลือกไว้ ${picked[k].length} ไฟล์</p>` : ''}`).join('')
+      + (n.substituteForm ? '<p class="hint">ระบบจะพิมพ์ใบรับรองแทนใบเสร็จให้ในชุดเอกสาร</p>' : '');
+    filesBox.querySelectorAll('input[type=file]').forEach((inp) => inp.addEventListener('change', () => {
+      picked[inp.dataset.kind] = Array.from(inp.files || []);
+    }));
+  }
+
   const val = (id) => { const el = document.getElementById(id); return el ? el.value : undefined; };
+  const checked = (id) => { const el = document.getElementById(id); return el ? el.checked : undefined; };
 
   function readForm() {
     draft.category_code = val('f_cat') ?? draft.category_code;
@@ -704,9 +779,12 @@ function openItemForm(D, item) {
     draft.description = val('f_desc') ?? '';
     draft.receipt_date = val('f_rdate') ?? '';
     draft.receipt_no = val('f_rno') ?? '';
-    draft.receipt_type = val('f_rtype') ?? '';
-    const ovs = document.getElementById('f_ovs');
-    draft.is_overseas = ovs ? ovs.checked : false;
+    draft.receipt_type = val('f_rtype') ?? draft.receipt_type;
+    draft.details.pay = val('f_pay') ?? draft.details.pay;
+    if (checked('f_company') !== undefined) draft.details.company_ok = checked('f_company');
+    if (checked('f_lump') !== undefined) draft.details.lump = checked('f_lump');
+    const ovs = checked('f_ovs');
+    draft.is_overseas = ovs === undefined ? false : ovs;
     if (document.getElementById('f_cur')) {
       draft.currency = (val('f_cur') || '').trim().toUpperCase();
       draft.amount_foreign = val('f_famt');
@@ -715,7 +793,7 @@ function openItemForm(D, item) {
     }
     draft.amount_thb = val('f_amt') ?? draft.amount_thb;
     detailFields(draft.category_code).forEach(([k]) => { const v = val('d_' + k); if (v !== undefined) draft.details[k] = v; });
-    if (document.getElementById('d_car_plate')) draft.details.car_plate = val('d_car_plate');
+    ['car_plate', 'lump_total', 'lump_months'].forEach((k) => { const v = val('d_' + k); if (v !== undefined) draft.details[k] = v; });
     draft.details.trips = draft.details.trips.map((t, i) => {
       const o = {};
       TRIP_FIELDS.forEach(([k]) => { const v = val(`t_${i}_${k}`); o[k] = v !== undefined ? v : t[k]; });
@@ -729,6 +807,9 @@ function openItemForm(D, item) {
     if (draft.category_code === 'GAS') {
       const sum = draft.details.trips.reduce((s, t, i) => s + (num(val(`t_${i}_fuel`)) || 0), 0);
       amt.value = sum ? round2(sum) : '';
+    } else if (draft.category_code === 'FITNESS' && checked('f_lump')) {
+      const tot = num(val('d_lump_total')); const m = num(val('d_lump_months'));
+      amt.value = tot && m ? round2(tot / m) : '';
     } else if (document.getElementById('f_cur')) {
       const f = num(val('f_famt')); const r = num(val('f_rate'));
       amt.value = f && r ? round2(f * r) : '';
@@ -740,29 +821,27 @@ function openItemForm(D, item) {
     const cat = catOf(val('f_cat'));
     const amt = num(val('f_amt'));
     const rdate = val('f_rdate');
-    const ovs = document.getElementById('f_ovs');
+    const lump = checked('f_lump');
     if (cat && cat.max_per_receipt && amt && amt > Number(cat.max_per_receipt)) {
-      out.push(`${cat.name}: ใบเสร็จเกิน ${money(cat.max_per_receipt)} บาท กรุณาตรวจสอบเงื่อนไข`);
+      out.push(`${cat.name}: ใบเสร็จเกิน ${money(cat.max_per_receipt)} บาท ต้องแจ้งหัวหน้าและบัญชีถึงสาเหตุก่อน`);
     }
-    if (rdate && monthStart(rdate) !== claim.claim_month && !(ovs && ovs.checked)) {
+    if (rdate && monthStart(rdate) !== claim.claim_month && !checked('f_ovs') && !lump) {
       out.push(`วันที่ใบเสร็จไม่อยู่ในเดือน${monthLabel(claim.claim_month)} — ต้องเบิกในเดือนของใบเสร็จ`);
     }
-    if (amt && amt > 10000) out.push('รายการนี้เกิน 10,000 บาท ใบเบิกนี้จะต้องให้ CEO อนุมัติต่อจาก SVP');
-    if (cat && cat.requires_memo) out.push(`${cat.name} ต้องแนบ Memo ที่อนุมัติแล้วทุกครั้ง`);
+    if (val('f_pay') === 'cash' && val('f_rtype') !== 'tax_invoice') {
+      out.push('จ่ายเงินสดต้องมีใบกำกับภาษีเต็มรูปเท่านั้น ถ้าไม่มีจะเบิกไม่ได้ (ติดต่อบัญชี)');
+    }
+    if (amt && amt > 10000) out.push('รายการนี้เกิน 10,000 บาท ต้องให้ CEO เซนอนุมัติในเอกสาร');
     document.getElementById('ifWarn').innerHTML = out.map((m) => `<div class="note warn">${esc(m)}</div>`).join('');
   }
 
   render();
 
   body.addEventListener('change', (e) => {
-    if (e.target.id === 'f_cat') {
+    const id = e.target.id;
+    if (['f_cat', 'f_ovs', 'f_rtype', 'f_pay', 'f_lump'].includes(id)) {
       readForm();
-      const c = catOf(draft.category_code);
-      draft.gl_code = (c && c.default_gl) || '';
-      if (draft.category_code === 'GAS' && !draft.details.car_plate) draft.details.car_plate = S.profile.car_plate || '';
-      render();
-    } else if (e.target.id === 'f_ovs') {
-      readForm();
+      if (id === 'f_cat' && draft.category_code === 'GAS' && !draft.details.car_plate) draft.details.car_plate = (D.emp && D.emp.car_plate) || '';
       render();
     } else {
       warn();
@@ -771,9 +850,7 @@ function openItemForm(D, item) {
   body.addEventListener('input', () => { recalc(); warn(); });
   body.addEventListener('click', (e) => {
     if (e.target.id === 'addTrip') { readForm(); draft.details.trips.push({}); render(); }
-    if (e.target.dataset.rmtrip !== undefined) {
-      readForm(); draft.details.trips.splice(Number(e.target.dataset.rmtrip), 1); render();
-    }
+    if (e.target.dataset.rmtrip !== undefined) { readForm(); draft.details.trips.splice(Number(e.target.dataset.rmtrip), 1); render(); }
   });
 
   document.getElementById('ifCancel').addEventListener('click', () => {
@@ -785,37 +862,50 @@ function openItemForm(D, item) {
     readForm();
     recalc();
     draft.amount_thb = val('f_amt');
+    const c = draft.category_code;
+    const cat = catOf(c);
+    const n = itemNeeds(draft);
     const problems = [];
-    if (!draft.category_code) problems.push('เลือกประเภทค่าใช้จ่าย');
-    if (!draft.description.trim()) problems.push('ใส่รายละเอียด');
-    if (!draft.receipt_date) problems.push('ใส่วันที่ในใบเสร็จ');
+    if (!c) problems.push('ประเภทค่าใช้จ่าย');
+    if (!draft.description.trim()) problems.push('รายละเอียด');
+    if (!draft.receipt_date) problems.push('วันที่ในใบเสร็จ');
     const amount = num(draft.amount_thb);
-    if (!amount || amount <= 0) problems.push('ใส่จำนวนเงิน');
-    detailFields(draft.category_code).forEach(([k, l, , req]) => {
+    if (!amount || amount <= 0) problems.push('จำนวนเงิน');
+    if (cat && cat.gl_required && !cat.gl_locked && !(draft.is_overseas && OVERSEAS_TRAVEL.includes(c)) && !draft.gl_code) problems.push('GL Code');
+    if (n.company && !draft.details.company_ok) problems.push('ยืนยันใบเสร็จในนามบริษัท');
+    detailFields(c).forEach(([, l, , req], i) => {
+      const k = detailFields(c)[i][0];
       if (req && !String(draft.details[k] ?? '').trim()) problems.push(l);
     });
-    if (draft.category_code === 'GAS') {
-      if (!draft.details.trips.length) problems.push('เพิ่มเที่ยวรถอย่างน้อย 1 เที่ยว');
-      draft.details.trips.forEach((t, i) => {
-        if (!t.date || !t.purpose || !t.km) problems.push(`เที่ยวที่ ${i + 1}: วันที่ / เพื่อปฏิบัติงาน / ระยะทาง`);
-      });
+    if (c === 'GAS') {
+      if (!['tax_invoice', 'e_tax'].includes(draft.receipt_type)) problems.push('ค่าน้ำมันต้องเป็นใบกำกับภาษีเต็มรูป');
+      if (!draft.details.trips.length) problems.push('เที่ยวรถอย่างน้อย 1 เที่ยว');
+      draft.details.trips.forEach((t, i) => { if (!t.date || !t.purpose || !t.km) problems.push(`เที่ยวที่ ${i + 1}: วันที่ / เพื่อปฏิบัติงาน / ระยะทาง`); });
     }
-    if (draft.is_overseas && (!draft.currency || !num(draft.amount_foreign) || !num(draft.fx_rate))) {
-      problems.push('สกุลเงิน ยอดเงิน และอัตราแลกเปลี่ยน');
+    if (c === 'FITNESS' && draft.details.lump && (!num(draft.details.lump_total) || !num(draft.details.lump_months) || !draft.receipt_no.trim())) {
+      problems.push('ยอดก้อน / จำนวนเดือน / เลขที่ใบเสร็จ');
     }
+    if (draft.details.pay === 'cash' && draft.receipt_type !== 'tax_invoice') problems.push('จ่ายเงินสดต้องเป็นใบกำกับภาษีเต็มรูป');
+    if (draft.is_overseas && (!draft.currency || !num(draft.amount_foreign) || !num(draft.fx_rate))) problems.push('สกุลเงิน ยอดเงิน และอัตราแลกเปลี่ยน');
+    const need = (k) => !have(k) && !(picked[k] && picked[k].length);
+    if (need('receipt')) problems.push('รูปใบเสร็จ');
+    if (n.proof && need('payment_proof')) problems.push('หลักฐานการจ่าย');
+    if (n.map && need('map')) problems.push('แผนที่เส้นทาง');
     if (problems.length) {
-      document.getElementById('ifWarn').innerHTML = `<div class="note err">กรุณากรอก: ${esc(problems.join(', '))}</div>`;
+      document.getElementById('ifWarn').innerHTML = `<div class="note err">กรุณากรอก / แนบ: ${esc(problems.join(', '))}</div>`;
       return;
     }
 
-    const details = { ...draft.details };
-    if (draft.category_code !== 'GAS') { delete details.trips; delete details.car_plate; }
-    const keep = new Set([...detailFields(draft.category_code).map((f) => f[0]), 'trips', 'car_plate']);
-    Object.keys(details).forEach((k) => { if (!keep.has(k)) delete details[k]; });
+    const keep = new Set([...detailFields(c).map((f) => f[0]), 'pay', 'company_ok']);
+    if (c === 'GAS') { keep.add('trips'); keep.add('car_plate'); }
+    if (c === 'FITNESS' && draft.details.lump) { keep.add('lump'); keep.add('lump_total'); keep.add('lump_months'); }
+    const details = {};
+    Object.keys(draft.details).forEach((k) => { if (keep.has(k)) details[k] = draft.details[k]; });
+    if (c === 'GIFT') details.kind = 'อื่นๆ';
 
     const payload = {
       claim_id: claim.id,
-      category_code: draft.category_code,
+      category_code: c,
       gl_code: draft.gl_code || null,
       description: draft.description.trim(),
       receipt_date: draft.receipt_date || null,
@@ -844,11 +934,11 @@ function openItemForm(D, item) {
         if (error) throw error;
         itemId = data.id;
       }
-      const files = Array.from(document.getElementById('f_files').files || []);
-      const kind = val('f_kind');
-      for (let i = 0; i < files.length; i++) {
-        btn.textContent = `กำลังอัปโหลดไฟล์ ${i + 1}/${files.length}…`;
-        await uploadFile(claim.id, itemId, files[i], kind, i);
+      const jobs = [];
+      Object.entries(picked).forEach(([kind, files]) => (files || []).forEach((f) => jobs.push([kind, f])));
+      for (let i = 0; i < jobs.length; i++) {
+        btn.textContent = `กำลังอัปโหลดไฟล์ ${i + 1}/${jobs.length}…`;
+        await uploadFile(claim, itemId, jobs[i][1], jobs[i][0], i);
       }
       toast('บันทึกรายการแล้ว');
       viewClaim(claim.id);
@@ -881,16 +971,17 @@ async function shrinkImage(file) {
   }
 }
 
-async function uploadFile(claimId, itemId, file, kind, idx) {
+async function uploadFile(claim, itemId, file, kind, idx) {
   const f = await shrinkImage(file);
   if (f.size > 10 * 1024 * 1024) throw new Error(`ไฟล์ ${file.name} ใหญ่เกิน 10 MB`);
   const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf' };
   const ext = extMap[f.type] || (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const path = `${S.profile.id}/${claimId}/${itemId || 'claim'}-${Date.now()}-${idx}.${ext}`;
+  // เก็บในโฟลเดอร์ของเจ้าของใบเบิก (ผู้ทำแทนอัปโหลดได้)
+  const path = `${claim.employee_id}/${claim.id}/${itemId || 'claim'}-${Date.now()}-${idx}.${ext}`;
   const up = await sb.storage.from(BUCKET).upload(path, f, { contentType: f.type || undefined, upsert: false });
   if (up.error) throw new Error(`อัปโหลด ${file.name} ไม่สำเร็จ: ${up.error.message}`);
   const { error } = await sb.from('attachments').insert({
-    claim_id: claimId, item_id: itemId, kind, file_path: path, file_name: file.name.slice(0, 200),
+    claim_id: claim.id, item_id: itemId, kind, file_path: path, file_name: file.name.slice(0, 200),
   });
   if (error) throw error;
 }
@@ -915,7 +1006,22 @@ async function viewApprove() {
     return `<h2>${esc(STATUS[st][0])} <span class="muted small">(${mine.length})</span></h2>
       <section class="panel">${rows ? `<ul class="list">${rows}</ul>` : '<div class="empty">ไม่มีรายการ</div>'}</section>`;
   }).join('');
-  $app.innerHTML = `<h1>${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}</h1>${groups}
+  let cancelled = '';
+  if (['svp', 'admin'].includes(S.profile.role)) {
+    const since = new Date(Date.now() - 14 * 864e5).toISOString();
+    const { data: cx } = await sb.from('claims')
+      .select('id, ref_no, total_amount, cancel_reason, updated_at, employee:profiles!claims_employee_id_fkey(full_name)')
+      .eq('status', 'cancelled').neq('employee_id', S.profile.id).gte('updated_at', since)
+      .order('updated_at', { ascending: false }).limit(20);
+    if (cx && cx.length) {
+      cancelled = `<h2>ใบที่ถูกยกเลิก (14 วันล่าสุด)</h2><section class="panel"><ul class="list">${cx.map((c) => `
+        <li><a href="#/claim/${c.id}"><span><b>${esc(c.employee ? c.employee.full_name : '-')}</b></span>
+          <span class="amt">${money(c.total_amount)}</span>
+          <span class="small muted"><span class="ref">${esc(c.ref_no)}</span> เหตุผล: ${esc(c.cancel_reason || '-')}</span>
+          <span>${chip('cancelled')}</span></a></li>`).join('')}</ul></section>`;
+    }
+  }
+  $app.innerHTML = `<h1>${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}</h1>${groups}${cancelled}
     ${S.profile.role === 'admin' ? '<p class="hint">admin ดูได้อย่างเดียว การอนุมัติต้องใช้บัญชีของผู้อนุมัติแต่ละขั้น</p>' : ''}`;
 }
 
@@ -994,7 +1100,7 @@ const MEMO_TOPIC = { ENTERTAIN: 'ค่าเลี้ยงรับรอง',
 function memoDocHTML(m, emp, forPrint, sigs) {
   sigs = sigs || {};
   const st = S.settings || {};
-  const topic = MEMO_TOPIC[m.memo_kind] || (m.subject || '').replace(/^ขออนุมัติ/, '').replace(/เกินวงเงิน$/, '');
+  const topic = m.topic || MEMO_TOPIC[m.memo_kind] || (m.subject || '').replace(/^ขออนุมัติ/, '').replace(/เกินวงเงิน$/, '');
   const box = (on) => `<span class="mbox">${on ? '✓' : ''}</span>`;
   const mark = (at, label, url) => `${at && url ? `<img class="sig-img" src="${esc(url)}" alt="">` : ''}${at
     ? `<div class="sig-mark">✓ ${label}<br><span>${esc(label === 'ยื่นออนไลน์' ? fmtDate(at) : fmtDateTime(at))}</span></div>`
@@ -1054,7 +1160,7 @@ function memoDocHTML(m, emp, forPrint, sigs) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=11', location.href).href;
+  const css = new URL('style.css?v=12', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
     <link href="${DOC_FONTS}" rel="stylesheet">

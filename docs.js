@@ -55,12 +55,15 @@ const sigLine = (url, cls) => `<span class="fill ${cls || 'w40'} sigfill">${sigI
 const onlineMark = (ts) => (ts ? `<div class="online">✓ อนุมัติออนไลน์ ${esc(dmy(bkkDate(ts)))}</div>` : '');
 
 // 1) ใบเบิกสรุปยอดเงินโอน
-function docRequisition(D, budgets, sig) {
-  const { claim, emp, items } = D;
-  const rows = items.map((it) => {
+function docRequisition(D, items, budgets, sig) {
+  const { claim, emp } = D;
+  const total = items.reduce((t, it) => t + Number(it.amount_thb), 0);
+  const ceo = total > 10000;                                   // ยอดรวมใบปะหน้าเกิน 10,000 → CEO เซน
+  const welfare = items.some((it) => ['FITNESS', 'GLASSES'].includes(it.category_code));
+  const rows = items.map((it, n) => {
     const cat = catOf(it.category_code);
     const b = cat && cat.budget_type ? budgets[cat.budget_type] : null;
-    return `<tr><td class="c">${it.line_no}</td><td>${esc(it.description)}</td>
+    return `<tr><td class="c">${n + 1}</td><td>${esc(it.description)}</td>
       <td class="r">THB ${money(it.amount_thb)}</td><td></td>
       <td class="r">${b != null ? money(b) : ''}</td><td></td></tr>`;
   });
@@ -81,7 +84,10 @@ function docRequisition(D, budgets, sig) {
       <tr><th>REQUEST BY / DATE</th><th>APPROVE BY /DATE</th><th>PAY BY /DATE</th><th>RECEIVE BY DATE</th></tr>
       <tr>
         <td><div class="sig-space">${sigImg(sig.emp)}</div>${esc(emp.full_name || '')}<br><small>${esc(dmy(bkkDate(claim.submitted_at)))}</small></td>
-        <td><div class="sig-space">${sigImg(sig.svp)}${onlineMark(claim.approved_at)}</div>${esc(claim.approved_name || '')}<br><small>${esc(dmy(bkkDate(claim.approved_at)))}</small></td>
+        <td>${ceo
+          ? '<div class="sig-space"></div>(CEO)<br><small>&nbsp;</small>'
+          : `<div class="sig-space">${sigImg(sig.svp)}${onlineMark(claim.approved_at)}</div>${esc(claim.approved_name || '')}<br><small>${esc(dmy(bkkDate(claim.approved_at)))}</small>`}
+          ${welfare ? '<div class="hr-mini">HR ....................</div>' : ''}</td>
         <td><div class="sig-space"></div></td>
         <td><div class="sig-space"></div></td>
       </tr>
@@ -105,7 +111,7 @@ function docEntertain(D, it, sig) {
     <p>เรื่อง&nbsp; ขออนุมัติเงินค่าเลี้ยงรับรอง</p>
     <p>เรียน&nbsp; กรรมการผู้จัดการ/กรรมการ</p>
     <p class="gap">ด้วยข้าพเจ้า ${fill(emp.name_en || emp.full_name, 'w45')} มีความประสงค์ขออนุมัติเงินค่าเลี้ยงรับรอง ดังรายละเอียดต่อไปนี้</p>
-    <p class="boxes">${box('อาหารและเครื่องดื่ม', 'ค่าอาหารและเครื่องดื่ม')}&emsp;&emsp;&emsp;${box('ที่พัก', 'ค่าที่พัก')}&emsp;&emsp;&emsp;${box('อื่นๆ', 'อื่นๆ')} ${fill('', 'w30')}</p>
+    <p class="boxes">${box('อาหารและเครื่องดื่ม', 'ค่าอาหารและเครื่องดื่ม')}&emsp;&emsp;&emsp;${box('ที่พัก', 'ค่าที่พัก')}&emsp;&emsp;&emsp;${box('อื่นๆ', 'อื่นๆ')} ${fill(it.category_code === 'GIFT' ? 'ค่าของขวัญลูกค้า' : '', 'w30')}</p>
     <p>ที่ ${fill(d.venue, 'w45')} เพื่อรับรองคุณ ${fill(d.guest_name, 'w30')}</p>
     <p>บริษัท ${fill(d.guest_company, 'w45')} มาจาก ${fill(d.guest_from, 'w30')}</p>
     <p>ประเทศ ${fill(d.country, 'w45')} Ref. Job # ${fill(d.job_ref, 'w30')}</p>
@@ -199,6 +205,41 @@ function docGas(D, gasItems, sig) {
   </section>`;
 }
 
+// สรุปค่าใช้จ่ายเดินทางต่างประเทศ (แยกหมวดเป็นกลุ่มย่อย)
+function docOverseas(D, items, sig) {
+  const { claim, emp } = D;
+  const groups = {};
+  items.forEach((it) => { (groups[it.category_code] = groups[it.category_code] || []).push(it); });
+  let grand = 0;
+  const body = Object.entries(groups).map(([code, list]) => {
+    const cat = catOf(code);
+    const sub = list.reduce((t, it) => t + Number(it.amount_thb), 0);
+    grand += sub;
+    return `<tr class="grp"><td colspan="6"><b>${esc(cat ? cat.name : code)}</b></td></tr>`
+      + list.map((it) => `<tr><td class="c">${esc(dmy(it.receipt_date))}</td><td>${esc(it.description)}</td>
+        <td class="c">${esc(it.currency)}</td><td class="r">${it.amount_foreign != null ? money(it.amount_foreign) : ''}</td>
+        <td class="r">${it.fx_rate != null ? esc(String(it.fx_rate)) : ''}${it.fx_source ? ` <small>(${esc(it.fx_source)})</small>` : ''}</td>
+        <td class="r">${money(it.amount_thb)}</td></tr>`).join('')
+      + `<tr><td colspan="5" class="r">รวม${esc(cat ? cat.name : code)}</td><td class="r b">${money(sub)}</td></tr>`;
+  }).join('');
+  return `<section class="doc-page doc-sub">
+    <div class="doc-ref">Ref. ${esc(claim.ref_no)}</div>
+    ${companyHead()}
+    <h2 class="c">สรุปค่าใช้จ่ายเดินทางต่างประเทศ</h2>
+    <p>ชื่อ ${fill(emp.full_name, 'w30')}&emsp;ตำแหน่ง ${fill(emp.position_title, 'w20')}&emsp;เดือน ${fill(monthLabel(claim.claim_month), 'w15')}</p>
+    <table class="grid">
+      <colgroup><col style="width:13%"><col style="width:37%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:15%"></colgroup>
+      <tr><th>วันที่</th><th>รายละเอียด</th><th>สกุลเงิน</th><th>ยอดเงิน</th><th>อัตราแลกเปลี่ยน</th><th>บาท</th></tr>
+      ${body}
+      <tr><td colspan="5" class="r b">รวมทั้งสิ้น</td><td class="r b">${money(grand)}</td></tr>
+    </table>
+    <p class="small">แนบบิลทุกใบ และ Memo ขออนุมัติเดินทางต่างประเทศ</p>
+    <div class="sign-block">
+      <p>ลงชื่อ ${sigLine(sig.emp)} ผู้เบิก</p><p class="paren">( ${fill(emp.full_name, 'w40')} )</p>
+    </div>
+  </section>`;
+}
+
 // 4) ใบรับรองแทนใบเสร็จรับเงิน
 function docSubstitute(D, subItems, sig) {
   const { claim, emp } = D;
@@ -249,15 +290,40 @@ async function openClaimDocs(D) {
     (data || []).forEach((r, i) => { if (r && r.signedUrl && !r.error) sig[want[i][0]] = r.signedUrl; });
   }
 
-  const pages = [docRequisition(D, budgets, sig)];
-  D.items.filter((it) => it.category_code === 'ENTERTAIN').forEach((it) => pages.push(docEntertain(D, it, sig)));
-  const gas = D.items.filter((it) => it.category_code === 'GAS');
-  if (gas.length) pages.push(docGas(D, gas, sig));
-  const subs = D.items.filter((it) => it.receipt_type === 'substitute');
-  if (subs.length) pages.push(docSubstitute(D, subs, sig));
-  D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`));
+  // จัดชุดเอกสาร: ใบปะหน้า + เอกสารคู่ใบปะหน้า → บันทึกเลี้ยงรับรองทีละรายการ + Memo → Ent-Gas + Memo
+  const isEntSet = (it) => ['ENTERTAIN', 'GIFT'].includes(it.category_code)
+    && !(it.is_overseas && !String((it.details || {}).job_ref || '').trim());
+  const entItems = D.items.filter(isEntSet);
+  const coverItems = D.items.filter((it) => !isEntSet(it));
+  const needsSub = (it) => it.receipt_type === 'substitute'
+    || (['ENTERTAIN', 'GIFT'].includes(it.category_code) && ['receipt', 'cash_bill'].includes(it.receipt_type));
+  const memoPage = (m) => `<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`;
+  const pages = [];
 
-  const css = new URL('style.css?v=11', location.href).href;
+  if (coverItems.length) {
+    pages.push(docRequisition(D, coverItems, budgets, sig));
+    const ovs = coverItems.filter((it) => it.is_overseas);
+    if (ovs.length) pages.push(docOverseas(D, ovs, sig));
+    const subs = coverItems.filter(needsSub);
+    if (subs.length) pages.push(docSubstitute(D, subs, sig));
+    D.memos.filter((m) => m.memo_kind === 'EXPRESSWAY').forEach((m) => pages.push(memoPage(m)));
+  }
+  entItems.forEach((it) => {
+    pages.push(docEntertain(D, it, sig));
+    if (needsSub(it)) pages.push(docSubstitute(D, [it], sig));
+    D.memos.filter((m) => m.item_id === it.id).forEach((m) => pages.push(memoPage(m)));
+  });
+  const gas = D.items.filter((it) => it.category_code === 'GAS');
+  if (gas.length) {
+    pages.push(docGas(D, gas, sig));
+    D.memos.filter((m) => m.memo_kind === 'GAS').forEach((m) => pages.push(memoPage(m)));
+  }
+  // Memo อื่นที่ยังไม่ได้วาง (เช่น Memo รูปแบบเดิม)
+  const placed = new Set(pages.join('').match(/No\. [^<]*/g) || []);
+  D.memos.filter((m) => !['EXPRESSWAY', 'GAS'].includes(m.memo_kind) && !(m.item_id && entItems.some((it) => it.id === m.item_id)))
+    .forEach((m) => { if (!placed.has(`No. ${m.memo_no}`)) pages.push(memoPage(m)); });
+
+  const css = new URL('style.css?v=12', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -265,8 +331,9 @@ async function openClaimDocs(D) {
     <link href="${DOC_FONTS}" rel="stylesheet">
     <link rel="stylesheet" href="${css}"></head>
     <body class="print-page">
-      <div class="print-bar">เอกสาร ${pages.length} หน้า · กด <b>พิมพ์</b> แล้วเลือก <b>บันทึกเป็น PDF / Save as PDF</b>
+      <div class="print-bar">เอกสาร ${pages.length} หน้า · เขียนเลข ${esc(D.claim.ref_no)} ที่มุมล่างขวาของใบเสร็จทุกใบ · ส่งตัวจริงภายในวันที่ 2 ของเดือนถัดไป
         <button onclick="window.print()">พิมพ์ / บันทึก PDF</button></div>
+      <div class="print-ref">Ref. ${esc(D.claim.ref_no)}</div>
       ${pages.join('')}
     </body></html>`);
   w.document.close();
