@@ -67,6 +67,13 @@ const FILE_KINDS = [
 ];
 const kindLabel = (k) => (FILE_KINDS.find((x) => x[0] === k) || [k, k])[1];
 const catOf = (code) => S.refs.cats.find((c) => c.code === code);
+// เลี้ยงรับรอง/ของขวัญ ใช้บันทึกขออนุมัติเลี้ยงรับรอง ไม่ใช้ใบปะหน้า (ยกเว้นต่างประเทศที่ไม่ลง Job → รวมในใบสรุปต่างประเทศ)
+const isEntertainSet = (it) => ['ENTERTAIN', 'GIFT'].includes(it.category_code)
+  && !(it.is_overseas && !String((it.details || {}).job_ref || '').trim());
+const claimTitle = (items) => {
+  const names = [...new Set((items || []).map((it) => { const c = S.refs.cats.find((x) => x.code === it.category_code); return c ? c.name : it.category_code; }))];
+  return names.length ? names.join(' / ') : 'ใบเบิกใหม่';
+};
 
 let toastTimer;
 function toast(msg) {
@@ -307,11 +314,6 @@ function viewNew() {
       </select>
       <p class="hint">ยื่นเบิกของแต่ละเดือนได้ถึงวันที่ 2 ของเดือนถัดไป</p>
 
-      <label for="project">เรื่อง (PROJECT)</label>
-      <input id="project" placeholder="เช่น Phone และค่าน้ำมันส่วนเกิน">
-
-      <label for="payto">จ่ายให้ (PAY TO)</label>
-      <input id="payto" value="${esc(S.profile.full_name || '')}" placeholder="เว้นว่าง = ชื่อเจ้าของใบเบิก">
 
       <div class="actions"><button class="btn" type="submit">สร้างใบเบิก</button></div>
     </form>`;
@@ -323,10 +325,10 @@ function viewNew() {
     const { data, error } = await sb.from('claims').insert({
       employee_id: document.getElementById('owner') ? document.getElementById('owner').value : S.profile.id,
       claim_month: document.getElementById('month').value,
-      project: document.getElementById('project').value.trim() || null,
-      pay_to: (() => { const o = document.getElementById('owner'); const v = document.getElementById('payto').value.trim();
-        if (o && o.value !== S.profile.id) { const d = S.delegates.find((x) => x.id === o.value); return d ? d.full_name : v; }
-        return v || null; })(),
+      project: null,
+      pay_to: (() => { const o = document.getElementById('owner');
+        if (o && o.value !== S.profile.id) { const d = S.delegates.find((x) => x.id === o.value); return d ? d.full_name : null; }
+        return S.profile.full_name || null; })(),
     }).select('id').single();
     btn.disabled = false;
     if (error) { toast(errMsg(error)); return; }
@@ -382,6 +384,7 @@ async function viewClaim(id) {
     (['pending_accounting', 'pending_payment'].includes(claim.status) && role === 'accounting'));
   const canAddMemo = canActFor(claim.employee_id) && ['pending_approval', 'pending_ceo', 'pending_fhr', 'pending_hr', 'pending_accounting'].includes(claim.status);
   const claimFiles = atts.filter((a) => !a.item_id);
+  const hasCover = items.some((it) => !isEntertainSet(it));   // เลี้ยงรับรอง/ของขวัญ ไม่ใช้ใบปะหน้า
 
   const fileLinks = (itemId) => atts.filter((a) => a.item_id === itemId).map((a) =>
     `<span><a href="${esc(urls[a.file_path] || '#')}" target="_blank" rel="noopener">${esc(kindLabel(a.kind))}</a>${
@@ -411,7 +414,7 @@ async function viewClaim(id) {
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span class="ref">${esc(claim.ref_no)}</span>${chip(claim.status)}
     </div>
-    <h1>${esc(claim.project || 'ใบเบิก')}</h1>
+    <h1>${esc(claim.project || claimTitle(items))}</h1>
     <p class="muted small" style="margin-top:-8px">เดือน${esc(monthLabel(claim.claim_month))} · Cost center ${esc(claim.cost_center)}</p>
     ${claim.employee_id !== S.profile.id ? `<p><b>${esc(emp.full_name || '-')}</b> <span class="muted small">${esc(emp.emp_code || '')} ${esc(emp.position_title || '')}</span></p>` : ''}
     ${claim.status === 'cancelled' ? `<div class="note err"><b>ยกเลิกแล้ว:</b> ${esc(claim.cancel_reason || '')}</div>` : ''}
@@ -424,8 +427,9 @@ async function viewClaim(id) {
     ${claim.memo_required ? `<div class="note warn">ใบนี้ต้องแนบไฟล์ Memo ที่อนุมัติครบแล้ว บัญชีจึงจะรับเรื่องได้ (แนบในหัวข้อ "ไฟล์แนบของใบเบิก")</div>` : ''}
     ${editable && memos.length ? `<div class="note warn">ใบเบิกนี้เกินวงเงิน ระบบสร้างร่าง Memo ให้แล้ว ${memos.length} ฉบับ (ด้านล่าง) — ตรวจข้อความ แล้วกด "ยื่นเบิก" Memo จะถูกส่งไปพร้อมใบเบิก</div>` : ''}
 
-    ${editable ? `
+    ${!hasCover ? '' : editable ? `
     <section class="panel">
+      <h3 style="margin-top:0">ข้อมูลใบปะหน้า (Cheque / Cash Requisition)</h3>
       <div class="row">
         <div><label for="h_project">เรื่อง (PROJECT)</label><input id="h_project" value="${esc(claim.project || '')}"></div>
         <div><label for="h_payto">จ่ายให้ (PAY TO)</label><input id="h_payto" value="${esc(claim.pay_to || '')}"></div>
@@ -524,7 +528,8 @@ async function viewClaim(id) {
   }
   if (!editable) return;
 
-  document.getElementById('saveHead').addEventListener('click', async () => {
+  const sh = document.getElementById('saveHead');
+  if (sh) sh.addEventListener('click', async () => {
     const { error } = await sb.from('claims').update({
       project: document.getElementById('h_project').value.trim() || null,
       pay_to: document.getElementById('h_payto').value.trim() || null,
