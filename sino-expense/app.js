@@ -1,5 +1,5 @@
 // =====================================================================
-// SINO ทำเบิกออนไลน์ — ส่วนที่ 2: ล็อกอิน + ใบเบิกของฉัน + ยื่นเบิก
+// SINO ทำเบิกออนไลน์ — ส่วนที่ 2–3: ล็อกอิน, ใบเบิกของฉัน, ยื่นเบิก, อนุมัติ / ตรวจ / จ่ายเงิน
 // ไฟล์นี้ไม่มีรหัสผ่านหรือ key (key อยู่ใน config.js)
 // =====================================================================
 'use strict';
@@ -73,11 +73,43 @@ function toast(msg) {
 }
 const errMsg = (e) => (e && (e.message || e.error_description)) || 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง';
 
+// ขั้นที่แต่ละ role ต้องดำเนินการ
+const QUEUE = {
+  svp: ['pending_approval'],
+  ceo: ['pending_ceo'],
+  hr: ['pending_hr'],
+  accounting: ['pending_accounting', 'pending_payment'],
+  admin: ['pending_approval', 'pending_ceo', 'pending_hr', 'pending_accounting', 'pending_payment'],
+};
+const isApprover = () => !!QUEUE[S.profile && S.profile.role];
+
 function showTop(on) {
   document.getElementById('topbar').hidden = !on;
-  if (on && S.profile) {
-    document.getElementById('who').textContent = S.profile.full_name || S.profile.email || '';
-  }
+  if (!on || !S.profile) return;
+  document.getElementById('who').textContent = S.profile.full_name || S.profile.email || '';
+  const nav = document.getElementById('nav');
+  if (!isApprover()) { nav.innerHTML = ''; return; }
+  const h = location.hash || '#/';
+  const onApprove = h === '#/approve';
+  nav.innerHTML = `<a href="#/" class="${onApprove ? '' : 'on'}">ใบเบิกของฉัน</a>
+    <a href="#/approve" class="${onApprove ? 'on' : ''}">${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}<span class="count" id="qcount"></span></a>`;
+  queueQuery(false).then(({ count }) => {
+    const el = document.getElementById('qcount');
+    if (el) el.textContent = count ? String(count) : '';
+  });
+}
+
+function queueQuery(withRows) {
+  const sts = QUEUE[S.profile.role] || [];
+  const cols = withRows
+    ? 'id, ref_no, claim_month, route, project, status, total_amount, max_item_amount, memo_required, submitted_at, employee:profiles!claims_employee_id_fkey(full_name, emp_code)'
+    : 'id';
+  let q = sb.from('claims')
+    .select(cols, withRows ? undefined : { count: 'exact', head: true })
+    .in('status', sts)
+    .neq('employee_id', S.profile.id);
+  if (withRows) q = q.order('submitted_at', { ascending: true });
+  return q;
 }
 
 // ---------------------------------------------------------------------
@@ -107,6 +139,7 @@ async function route() {
   window.scrollTo(0, 0);
   const m = h.match(/^#\/claim\/([0-9a-f-]{36})$/);
   if (h === '#/new') return viewNew();
+  if (h === '#/approve') return isApprover() ? viewApprove() : viewHome();
   if (m) return viewClaim(m[1]);
   return viewHome();
 }
@@ -285,13 +318,15 @@ async function loadClaim(id) {
     sb.from('claim_logs').select('*').eq('claim_id', id).order('created_at'),
   ]);
   if (c.error) throw c.error;
+  const { data: emp } = await sb.from('profiles')
+    .select('id, full_name, emp_code, position_title, supervisor_id').eq('id', c.data.employee_id).single();
   const attList = atts.data || [];
   const urls = {};
   if (attList.length) {
     const { data: signed } = await sb.storage.from(BUCKET).createSignedUrls(attList.map((a) => a.file_path), 3600);
     (signed || []).forEach((s) => { if (s.signedUrl) urls[s.path] = s.signedUrl; });
   }
-  return { claim: c.data, items: items.data || [], atts: attList, urls, logs: logs.data || [] };
+  return { claim: c.data, emp: emp || {}, items: items.data || [], atts: attList, urls, logs: logs.data || [] };
 }
 
 async function viewClaim(id) {
@@ -301,9 +336,17 @@ async function viewClaim(id) {
     $app.innerHTML = `<div class="note err">เปิดใบเบิกไม่ได้: ${esc(errMsg(e))}</div><p><a href="#/">กลับหน้าแรก</a></p>`;
     return;
   }
-  const { claim, items, atts, urls, logs } = D;
+  const { claim, emp, items, atts, urls, logs } = D;
   const mine = claim.employee_id === S.profile.id;
   const editable = mine && ['draft', 'returned'].includes(claim.status);
+  const role = S.profile.role;
+  const canAct = !mine && (
+    (claim.status === 'pending_approval' && emp.supervisor_id === S.profile.id) ||
+    (claim.status === 'pending_ceo' && role === 'ceo') ||
+    (claim.status === 'pending_hr' && role === 'hr') ||
+    (['pending_accounting', 'pending_payment'].includes(claim.status) && role === 'accounting'));
+  const canAddMemo = mine && ['pending_approval', 'pending_ceo', 'pending_hr', 'pending_accounting'].includes(claim.status);
+  const claimFiles = atts.filter((a) => !a.item_id);
 
   const fileLinks = (itemId) => atts.filter((a) => a.item_id === itemId).map((a) =>
     `<span><a href="${esc(urls[a.file_path] || '#')}" target="_blank" rel="noopener">${esc(kindLabel(a.kind))}</a>${
@@ -328,12 +371,14 @@ async function viewClaim(id) {
     l.note ? `<div class="small muted">${esc(l.note)}</div>` : ''}</li>`).join('');
 
   $app.innerHTML = `
-    <p><a href="#/" class="text-btn">‹ ใบเบิกของฉัน</a></p>
+    <p>${mine ? '<a href="#/" class="text-btn">‹ ใบเบิกของฉัน</a>' : '<a href="#/approve" class="text-btn">‹ รายการรอดำเนินการ</a>'}</p>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span class="ref">${esc(claim.ref_no)}</span>${chip(claim.status)}
     </div>
     <h1>${esc(claim.project || ROUTE_LABEL[claim.route])}</h1>
     <p class="muted small" style="margin-top:-8px">${esc(ROUTE_LABEL[claim.route])} · เดือน${esc(monthLabel(claim.claim_month))} · Cost center ${esc(claim.cost_center)}</p>
+    ${!mine ? `<p><b>${esc(emp.full_name || '-')}</b> <span class="muted small">${esc(emp.emp_code || '')} ${esc(emp.position_title || '')}</span></p>` : ''}
+    ${claim.status === 'rejected' && claim.return_note ? `<div class="note err"><b>ไม่อนุมัติ:</b> ${esc(claim.return_note)}</div>` : ''}
 
     ${claim.status === 'returned' && claim.return_note ? `<div class="note err"><b>ส่งกลับแก้ไข:</b> ${esc(claim.return_note)}</div>` : ''}
     ${claim.check_notes ? `<div class="note warn">${esc(claim.check_notes)}</div>` : ''}
@@ -355,6 +400,16 @@ async function viewClaim(id) {
 
     <div class="total"><span>รวมทั้งสิ้น</span><span>${money(claim.total_amount)} บาท</span></div>
 
+    ${claimFiles.length || canAddMemo ? `<h2>ไฟล์แนบของใบเบิก</h2>
+    <section class="panel">
+      <div class="files">${claimFiles.map((a) => `<a href="${esc(urls[a.file_path] || '#')}" target="_blank" rel="noopener">${esc(kindLabel(a.kind))}: ${esc(a.file_name || '')}</a>`).join('<br>') || '<span class="small muted">ยังไม่มี</span>'}</div>
+      ${canAddMemo ? `<label for="memoFile">แนบ Memo ที่อนุมัติแล้ว (PDF หรือรูป)</label>
+        <input id="memoFile" type="file" accept="image/*,application/pdf">
+        <div class="actions"><button class="btn ghost" type="button" id="memoUpload">อัปโหลด Memo</button></div>` : ''}
+    </section>` : ''}
+
+    ${canAct ? decidePanel(claim) : ''}
+
     ${editable ? `<div class="actions">
       <button class="btn" type="button" id="submitClaim">ยื่นเบิก</button>
       ${claim.status === 'draft' ? `<button class="btn danger" type="button" id="deleteClaim">ลบใบเบิก</button>` : ''}
@@ -364,6 +419,19 @@ async function viewClaim(id) {
     <h2>ประวัติ</h2>
     <ul class="log">${logHtml}</ul>`;
 
+  if (canAct) bindDecide(claim);
+  if (canAddMemo) {
+    document.getElementById('memoUpload').addEventListener('click', async (e) => {
+      const f = document.getElementById('memoFile').files[0];
+      if (!f) { toast('เลือกไฟล์ Memo ก่อน'); return; }
+      e.target.disabled = true;
+      try {
+        await uploadFile(claim.id, null, f, 'memo', 0);
+        toast('แนบ Memo แล้ว');
+        viewClaim(claim.id);
+      } catch (err) { toast(errMsg(err)); e.target.disabled = false; }
+    });
+  }
   if (!editable) return;
 
   document.getElementById('saveHead').addEventListener('click', async () => {
@@ -762,13 +830,108 @@ async function uploadFile(claimId, itemId, file, kind, idx) {
   if (f.size > 10 * 1024 * 1024) throw new Error(`ไฟล์ ${file.name} ใหญ่เกิน 10 MB`);
   const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf' };
   const ext = extMap[f.type] || (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const path = `${S.profile.id}/${claimId}/${itemId}-${Date.now()}-${idx}.${ext}`;
+  const path = `${S.profile.id}/${claimId}/${itemId || 'claim'}-${Date.now()}-${idx}.${ext}`;
   const up = await sb.storage.from(BUCKET).upload(path, f, { contentType: f.type || undefined, upsert: false });
   if (up.error) throw new Error(`อัปโหลด ${file.name} ไม่สำเร็จ: ${up.error.message}`);
   const { error } = await sb.from('attachments').insert({
     claim_id: claimId, item_id: itemId, kind, file_path: path, file_name: file.name.slice(0, 200),
   });
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------
+// หน้ารอดำเนินการ (SVP / CEO / HR / บัญชี)
+// ---------------------------------------------------------------------
+async function viewApprove() {
+  $app.innerHTML = `<p class="muted center pad">กำลังโหลด…</p>`;
+  const { data, error } = await queueQuery(true);
+  if (error) { $app.innerHTML = `<div class="note err">${esc(errMsg(error))}</div>`; return; }
+  const list = data || [];
+  const groups = QUEUE[S.profile.role].map((st) => {
+    const mine = list.filter((c) => c.status === st);
+    const rows = mine.map((c) => `
+      <li><a href="#/claim/${c.id}">
+        <span><b>${esc(c.employee ? c.employee.full_name : '-')}</b></span>
+        <span class="amt">${money(c.total_amount)}</span>
+        <span class="small muted"><span class="ref">${esc(c.ref_no)}</span> ${esc(monthLabel(c.claim_month))} · ${esc(c.project || ROUTE_LABEL[c.route])}</span>
+        <span class="small">${c.memo_required ? '<span class="chip wait">ต้องมี Memo</span>' : ''}${Number(c.max_item_amount) > 10000 ? ' <span class="chip">เกิน 10,000</span>' : ''}</span>
+      </a></li>`).join('');
+    return `<h2>${esc(STATUS[st][0])} <span class="muted small">(${mine.length})</span></h2>
+      <section class="panel">${rows ? `<ul class="list">${rows}</ul>` : '<div class="empty">ไม่มีรายการ</div>'}</section>`;
+  }).join('');
+  $app.innerHTML = `<h1>${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}</h1>${groups}
+    ${S.profile.role === 'admin' ? '<p class="hint">admin ดูได้อย่างเดียว การอนุมัติต้องใช้บัญชีของผู้อนุมัติแต่ละขั้น</p>' : ''}`;
+}
+
+function decidePanel(claim) {
+  const st = claim.status;
+  if (st === 'pending_payment') {
+    return `<section class="panel decide" id="decide">
+      <h3 style="margin-top:0">โอนเงิน</h3>
+      <p class="small">ยอดโอน <b>${money(claim.total_amount)} บาท</b> ให้ ${esc(claim.pay_to || '-')}</p>
+      <label for="dNote">หมายเหตุ (ถ้ามี)</label><input id="dNote" placeholder="เช่น วันที่โอน / เลขอ้างอิงการโอน">
+      <div class="actions"><button class="btn" type="button" data-act="mark_paid">บันทึกว่าโอนเงินแล้ว</button></div>
+    </section>`;
+  }
+  const isAcc = st === 'pending_accounting';
+  const title = { pending_approval: 'การอนุมัติของ SVP', pending_ceo: 'การอนุมัติของ CEO',
+    pending_hr: 'การตรวจของ HR', pending_accounting: 'การตรวจของฝ่ายบัญชี' }[st];
+  const memoBox = isAcc && claim.memo_required ? `
+      <div class="note warn">ใบนี้ต้องมี Memo — ตรวจไฟล์ Memo ในหัวข้อ "ไฟล์แนบของใบเบิก" ก่อนรับเรื่อง</div>
+      <p class="small">ถ้า Memo อนุมัติให้เพิ่มวงเงิน ใส่ยอดด้านล่าง ระบบจะเพิ่มวงเงินเดือนนั้นให้พนักงาน</p>
+      <div class="row">
+        <div><label for="mType">งบที่เพิ่ม</label><select id="mType">
+          <option value="">— ไม่เพิ่มวงเงิน —</option>
+          <option value="ENTERTAIN">Entertain</option><option value="GAS">Gas</option>
+          <option value="PHONE">Phone</option><option value="PARKING">Parking</option></select></div>
+        <div><label for="mAmt">ยอดตาม Memo (บาท)</label><input id="mAmt" type="number" inputmode="decimal" step="any"></div>
+      </div>` : '';
+  return `<section class="panel decide" id="decide">
+    <h3 style="margin-top:0">${esc(title)}</h3>
+    ${isAcc ? '<p class="small muted">รับเรื่องเมื่อได้รับเอกสารตัวจริงครบ และตรวจถูกต้องแล้ว</p>' : ''}
+    ${memoBox}
+    <label for="dNote">ความเห็น / เหตุผล <span class="muted small">(ต้องใส่เมื่อส่งกลับหรือไม่อนุมัติ)</span></label>
+    <textarea id="dNote"></textarea>
+    <div class="actions">
+      <button class="btn" type="button" data-act="approve">${isAcc ? 'ตรวจแล้ว รับเรื่อง' : st === 'pending_hr' ? 'HR ตรวจแล้ว' : 'อนุมัติ'}</button>
+      <button class="btn ghost" type="button" data-act="return">ส่งกลับแก้ไข</button>
+      ${isAcc ? '' : '<button class="btn danger" type="button" data-act="reject">ไม่อนุมัติ</button>'}
+    </div>
+  </section>`;
+}
+
+function bindDecide(claim) {
+  const panel = document.getElementById('decide');
+  if (!panel) return;
+  const CONFIRM = { approve: 'ยืนยันดำเนินการ?', return: 'ส่งกลับให้พนักงานแก้ไข?', reject: 'ยืนยันไม่อนุมัติใบเบิกนี้?', mark_paid: 'ยืนยันว่าโอนเงินแล้ว?' };
+  const DONE = { approve: 'ดำเนินการแล้ว', return: 'ส่งกลับแก้ไขแล้ว', reject: 'ไม่อนุมัติแล้ว', mark_paid: 'บันทึกการโอนเงินแล้ว' };
+  panel.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', async () => {
+    const act = b.dataset.act;
+    const noteEl = document.getElementById('dNote');
+    const note = noteEl ? noteEl.value.trim() : '';
+    if ((act === 'return' || act === 'reject') && !note) {
+      toast('กรุณาใส่เหตุผลก่อน');
+      noteEl.focus();
+      return;
+    }
+    if (!confirm(CONFIRM[act])) return;
+    const mType = document.getElementById('mType');
+    const mAmt = document.getElementById('mAmt');
+    const args = { p_claim: claim.id, p_action: act, p_note: note || null };
+    if (act === 'approve' && mType && mType.value && num(mAmt.value)) {
+      args.p_memo_budget_type = mType.value;
+      args.p_memo_amount = num(mAmt.value);
+    }
+    panel.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+    const { error } = await sb.rpc('act_on_claim', args);
+    if (error) {
+      toast(errMsg(error));
+      panel.querySelectorAll('button').forEach((x) => { x.disabled = false; });
+      return;
+    }
+    toast(DONE[act]);
+    location.hash = '#/approve';
+  }));
 }
 
 init();
