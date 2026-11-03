@@ -114,14 +114,14 @@ function docEntertain(D, it, sig) {
     <p class="ind">จึงเรียนมาเพื่อโปรดพิจารณาอนุมัติเงินค่าเลี้ยงรับรองจำนวน ${fill(money(it.amount_thb), 'w20')} บาท</p>
     <div class="sign-block">
       <p>ลงชื่อ ${sigLine(sig.emp)} ผู้ขออนุมัติ</p>
-      <p>( ${fill(emp.name_en || emp.full_name, 'w40')} )</p>
+      <p class="paren">( ${fill(emp.name_en || emp.full_name, 'w40')} )</p>
       <p>ตำแหน่ง ${fill(emp.title_en || emp.position_title, 'w40')}</p>
     </div>
     <hr class="thick">
     <div class="sign-block">
       ${!ceo ? onlineMark(claim.approved_at) : ''}
       <p>ลงชื่อ ${sigLine(ceo ? null : sig.svp)} ผู้อนุมัติ</p>
-      <p>( ${fill(ceo ? '' : claim.approved_name, 'w40')} )</p>
+      <p class="paren">( ${fill(ceo ? '' : claim.approved_name, 'w40')} )</p>
       <p>ตำแหน่ง ${fill(ceo ? 'CEO' : (claim.approved_name ? claim.approved_title : ''), 'w40')}</p>
     </div>
   </section>`;
@@ -222,8 +222,8 @@ function docSubstitute(D, subItems, sig) {
     <p>ขอรับรองว่า รายจ่ายข้างต้นนี้ไม่อาจเรียกเก็บใบเสร็จรับเงินจากผู้รับได้ และข้าพเจ้าได้จ่ายไปในงานของทาง
       บริษัท โดยแท้ ตั้งแต่วันที่ ${fill(dmy(dates[0]), 'w15')} ถึงวันที่ ${fill(dmy(dates[dates.length - 1]), 'w15')}</p>
     <div class="sign-block">
-      <p>ลงชื่อ ${sigLine(sig.emp)} (ผู้เบิกจ่าย)</p><p>( ${fill(emp.full_name, 'w40')} )</p>
-      <p style="margin-top:24px">ลงชื่อ ${sigLine(sig.svp)} (ผู้อนุมัติ)</p><p>( ${fill(claim.approved_name, 'w40')} )</p>
+      <p>ลงชื่อ ${sigLine(sig.emp)} (ผู้เบิกจ่าย)</p><p class="paren">( ${fill(emp.full_name, 'w40')} )</p>
+      <p style="margin-top:24px">ลงชื่อ ${sigLine(sig.svp)} (ผู้อนุมัติ)</p><p class="paren">( ${fill(claim.approved_name, 'w40')} )</p>
     </div>
   </section>`;
 }
@@ -257,7 +257,7 @@ async function openClaimDocs(D) {
   if (subs.length) pages.push(docSubstitute(D, subs, sig));
   D.memos.forEach((m) => pages.push(`<section class="doc-page">${memoDocHTML(m, D.emp, true, sig)}</section>`));
 
-  const css = new URL('style.css?v=9', location.href).href;
+  const css = new URL('style.css?v=11', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

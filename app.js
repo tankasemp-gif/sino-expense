@@ -1003,7 +1003,7 @@ function memoDocHTML(m, emp, forPrint, sigs) {
   return `<article class="memo-doc">
     <table class="memo-head">
       <tr class="memo-top"><td class="logo"><img src="${esc(new URL('sino-logo.png', location.href).href)}" alt="SINO Logistics Corporation"></td>
-        <td><b class="memo-title">MEMORANDUM</b> No. ${esc(m.memo_no || '(ออกเลขเมื่อยื่นเบิก)')}</td></tr>
+        <td class="memo-id"><div class="memo-title">MEMORANDUM</div><div class="memo-no">No. ${esc(m.memo_no || '(ออกเลขเมื่อยื่นเบิก)')}</div></td></tr>
       <tr><th>To:</th><td>${esc(m.to_name || st.memo_to_name || '')}</td></tr>
       <tr><th>CC:</th><td>${esc(m.cc || '-')}</td></tr>
       <tr><th>From:</th><td>${esc(m.from_name || emp.name_en || emp.full_name || '')}</td></tr>
@@ -1054,7 +1054,7 @@ function memoDocHTML(m, emp, forPrint, sigs) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=9', location.href).href;
+  const css = new URL('style.css?v=11', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
     <link href="${DOC_FONTS}" rel="stylesheet">
