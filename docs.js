@@ -323,7 +323,7 @@ async function openClaimDocs(D) {
   D.memos.filter((m) => !['EXPRESSWAY', 'GAS'].includes(m.memo_kind) && !(m.item_id && entItems.some((it) => it.id === m.item_id)))
     .forEach((m) => { if (!placed.has(`No. ${m.memo_no}`)) pages.push(memoPage(m)); });
 
-  const css = new URL('style.css?v=12', location.href).href;
+  const css = new URL('style.css?v=13', location.href).href;
   w.document.open();
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -106,9 +106,11 @@ function showTop(on) {
   const h = location.hash || '#/';
   const onApprove = h === '#/approve';
   const onMe = h === '#/me';
-  nav.innerHTML = `<a href="#/" class="${onApprove || onMe ? '' : 'on'}">ใบเบิกของฉัน</a>
+  const onHist = h === '#/history';
+  nav.innerHTML = `<a href="#/" class="${onApprove || onMe || onHist ? '' : 'on'}">ใบเบิกของฉัน</a>
+    <a href="#/history" class="${onHist ? 'on' : ''}">ประวัติ / คัดลอก</a>
     ${isApprover() ? `<a href="#/approve" class="${onApprove ? 'on' : ''}">${S.profile.role === 'admin' ? 'ใบเบิกที่ค้างอยู่' : 'รอดำเนินการ'}<span class="count" id="qcount"></span></a>` : ''}
-    <a href="#/me" class="${onMe ? 'on' : ''}">ลายเซ็น / ข้อมูลของฉัน</a>`;
+    <a href="#/me" class="${onMe ? 'on' : ''}">ลายเซ็น</a>`;
   if (!isApprover()) return;
   queueQuery(false).then(({ count }) => {
     const el = document.getElementById('qcount');
@@ -157,6 +159,7 @@ async function route() {
   const m = h.match(/^#\/claim\/([0-9a-f-]{36})$/);
   if (h === '#/new') return viewNew();
   if (h === '#/me') return viewMe();
+  if (h === '#/history') return viewHistory();
   if (h === '#/approve') return isApprover() ? viewApprove() : viewHome();
   if (m) return viewClaim(m[1]);
   return viewHome();
@@ -388,8 +391,9 @@ async function viewClaim(id) {
     const cat = catOf(it.category_code);
     const fx = it.currency !== 'THB' ? ` · ${esc(it.currency)} ${money(it.amount_foreign)} × ${it.fx_rate} (${esc(it.fx_source)})` : '';
     return `<div class="item">
-      <div class="head"><span>${it.line_no}. ${esc(cat ? cat.name : it.category_code)}</span><span>${money(it.amount_thb)}</span></div>
+      <div class="head"><span>${it.line_no}. ${esc(cat ? cat.name : it.category_code)}${customerOf(it) ? ` · ${esc(customerOf(it))}` : ''}</span><span>${money(it.amount_thb)}</span></div>
       <div>${esc(it.description)}</div>
+      ${editable && (!it.receipt_date || !atts.some((a) => a.item_id === it.id)) ? '<div class="small" style="color:var(--red)">ต้องแก้: ใส่วันที่ใบเสร็จ / ยอด และแนบใบเสร็จใหม่</div>' : ''}
       <div class="meta">ใบเสร็จ ${fmtDate(it.receipt_date)}${it.receipt_no ? ' เลขที่ ' + esc(it.receipt_no) : ''} ${it.gl_code ? ' · GL ' + esc(it.gl_code) : ''}${fx}</div>
       <div class="files">${fileLinks(it.id) || '<span class="small muted">ยังไม่มีไฟล์แนบ</span>'}</div>
       ${editable ? `<div class="tools">
@@ -458,6 +462,7 @@ async function viewClaim(id) {
       </div>`).join('')}` : ''}
 
     ${canAct ? decidePanel(claim, memos) : ''}
+    ${mine && items.length ? `<div class="actions"><button class="btn ghost" type="button" id="copyClaim">คัดลอกทั้งใบ (สร้างใบใหม่เดือนนี้)</button></div>` : ''}
     ${canCancel ? `<div class="actions"><button class="btn danger" type="button" id="cancelClaim">ยกเลิกใบเบิกนี้</button></div>
       <p class="hint">ยกเลิกแล้วต้องสร้างใบใหม่ ระบบจะแจ้งให้ SVP เห็นพร้อมเหตุผล</p>` : ''}
 
@@ -471,6 +476,18 @@ async function viewClaim(id) {
     <ul class="log">${logHtml}</ul>`;
 
   if (canAct) bindDecide(claim);
+  const cp = document.getElementById('copyClaim');
+  if (cp) cp.addEventListener('click', async (e) => {
+    if (!confirm('สร้างใบเบิกใหม่ของเดือนนี้ โดยคัดลอกทุกรายการจากใบนี้?')) return;
+    e.target.disabled = true;
+    await copyWholeClaim(D);
+    e.target.disabled = false;
+  });
+  if (editable && S.pendingCopy && S.pendingCopy.claimId === claim.id) {
+    const pc = S.pendingCopy.prefill;
+    S.pendingCopy = null;
+    openItemForm(D, null, pc);
+  }
   const cc = document.getElementById('cancelClaim');
   if (cc) cc.addEventListener('click', async () => {
     const reason = prompt('เหตุผลที่ยกเลิกใบเบิกนี้');
@@ -563,11 +580,6 @@ async function viewClaim(id) {
 // ---------------------------------------------------------------------
 // ฟอร์มรายการ (เพิ่ม / แก้ไข) — ตามกติกาการเบิกฉบับยืนยัน
 // ---------------------------------------------------------------------
-const TRAVEL_FIELDS = [
-  ['destination', 'ปลายทาง (จังหวัด/ประเทศ)', 'text', true],
-  ['date_from', 'วันที่เริ่มเดินทาง', 'date', true],
-  ['date_to', 'วันที่สิ้นสุด', 'date', true],
-];
 // [key, label, type, required, options]
 function detailFields(code) {
   switch (code) {
@@ -590,8 +602,7 @@ function detailFields(code) {
       ['job_ref', 'Ref. Job #', 'text', false],
       ['purpose', 'โอกาส / วัตถุประสงค์', 'textarea', true],
     ];
-    case 'PHONE': return [['phone_period', 'งวดบิล (เช่น ต.ค. 2569)', 'text', true]];
-    case 'PER_DIEM': case 'HOTEL': case 'TRAVEL_FOOD': case 'TRANSPORT': return TRAVEL_FIELDS;
+    // หัวข้ออื่นไม่มีแบบฟอร์มเฉพาะ (ขึ้นในใบปะหน้าเป็นรายละเอียด + ยอดเงินเท่านั้น)
     default: return [];
   }
 }
@@ -617,7 +628,7 @@ function itemNeeds(d) {
   };
 }
 
-function openItemForm(D, item) {
+function openItemForm(D, item, prefill) {
   const { claim, atts } = D;
   const cats = S.refs.cats;
   const box = document.getElementById('itemForm');
@@ -625,7 +636,7 @@ function openItemForm(D, item) {
   if (addBtn) addBtn.hidden = true;
   const have = (kind) => item && atts.some((a) => a.item_id === item.id && a.kind === kind);
 
-  const draft = item ? {
+  const draft = prefill ? { ...prefill, details: { ...prefill.details } } : item ? {
     category_code: item.category_code, gl_code: item.gl_code || '', description: item.description,
     receipt_date: item.receipt_date || '', receipt_no: item.receipt_no || '', receipt_type: item.receipt_type || 'tax_invoice',
     is_overseas: item.is_overseas, currency: item.currency, amount_foreign: item.amount_foreign ?? '',
@@ -641,7 +652,8 @@ function openItemForm(D, item) {
 
   box.innerHTML = `
     <section class="panel" id="itemPanel">
-      <h3 style="margin-top:0">${item ? 'แก้ไขรายการ' : 'เพิ่มรายการ'}</h3>
+      <h3 style="margin-top:0">${item ? 'แก้ไขรายการ' : prefill ? 'เพิ่มรายการ (คัดลอกจากรายการเดิม)' : 'เพิ่มรายการ'}</h3>
+      ${prefill ? '<div class="note">ข้อมูลลูกค้าและรายละเอียดคัดลอกมาให้แล้ว ใส่วันที่ ยอดเงิน และแนบใบเสร็จใหม่</div>' : ''}
       <div id="ifBody"></div>
       <div id="ifFiles"></div>
       <div id="ifWarn"></div>
@@ -697,7 +709,7 @@ function openItemForm(D, item) {
     html += field('f_cat', 'ประเภทค่าใช้จ่าย', 'select', c, true, cats.map((x) => [x.code, x.name]));
     html += hint();
     html += glHtml();
-    html += field('f_desc', 'รายละเอียด (DESCRIPTION)', 'text', draft.description, true);
+    if (!['ENTERTAIN', 'GIFT'].includes(c)) html += field('f_desc', 'รายละเอียด (DESCRIPTION)', 'text', draft.description, true);
     html += `<div class="row"><div>${field('f_rdate', 'วันที่ในใบเสร็จ', 'date', draft.receipt_date, true)}</div>
              <div>${field('f_rno', 'เลขที่ใบเสร็จ', 'text', draft.receipt_no, lump)}</div></div>`;
     html += `<div class="row"><div>${field('f_rtype', 'ประเภทหลักฐาน', 'select', draft.receipt_type, true, RECEIPT_TYPES)}</div>
@@ -776,7 +788,7 @@ function openItemForm(D, item) {
   function readForm() {
     draft.category_code = val('f_cat') ?? draft.category_code;
     draft.gl_code = val('f_gl') ?? draft.gl_code;
-    draft.description = val('f_desc') ?? '';
+    draft.description = val('f_desc') ?? draft.description ?? '';
     draft.receipt_date = val('f_rdate') ?? '';
     draft.receipt_no = val('f_rno') ?? '';
     draft.receipt_type = val('f_rtype') ?? draft.receipt_type;
@@ -867,6 +879,13 @@ function openItemForm(D, item) {
     const n = itemNeeds(draft);
     const problems = [];
     if (!c) problems.push('ประเภทค่าใช้จ่าย');
+    // เลี้ยงรับรอง: ไม่ต้องกรอกรายละเอียด ระบบตั้งจากชื่อลูกค้าและสถานที่ให้
+    if (c === 'ENTERTAIN') {
+      draft.description = `เลี้ยงรับรองลูกค้า ${draft.details.guest_company || ''}${draft.details.venue ? ' ที่ ' + draft.details.venue : ''}`.trim();
+    }
+    if (c === 'GIFT') {
+      draft.description = `ของขวัญลูกค้า ${draft.details.guest_company || ''}${draft.details.purpose ? ' (' + draft.details.purpose + ')' : ''}`.trim();
+    }
     if (!draft.description.trim()) problems.push('รายละเอียด');
     if (!draft.receipt_date) problems.push('วันที่ในใบเสร็จ');
     const amount = num(draft.amount_thb);
@@ -1160,13 +1179,144 @@ function memoDocHTML(m, emp, forPrint, sigs) {
 function printMemo(m, emp) {
   const w = window.open('', '_blank');
   if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up'); return; }
-  const css = new URL('style.css?v=12', location.href).href;
+  const css = new URL('style.css?v=13', location.href).href;
   w.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8">
     <title>${esc(m.memo_no || 'Memo')}</title>
     <link href="${DOC_FONTS}" rel="stylesheet">
     <link rel="stylesheet" href="${css}"></head>
     <body class="print-page" onload="setTimeout(function(){window.print()},400)">${memoDocHTML(m, emp, true)}</body></html>`);
   w.document.close();
+}
+
+// ---------------------------------------------------------------------
+// ประวัติรายการ + คัดลอก (ใช้ข้อมูลลูกค้า/รายละเอียดเดิม แก้แค่ตัวเลขและวันที่)
+// ---------------------------------------------------------------------
+const customerOf = (it) => {
+  const d = it.details || {};
+  return [d.guest_company, d.guest_name].filter((x) => x && String(x).trim()).join(' · ');
+};
+
+// สร้างข้อมูลตั้งต้นจากรายการเดิม: เก็บประเภท ลูกค้า สถานที่ วัตถุประสงค์ เส้นทาง / ล้างวันที่ ยอด เลขใบเสร็จ
+function copyPrefill(it) {
+  const d = JSON.parse(JSON.stringify(it.details || {}));
+  ['company_ok', 'event_date', 'lump', 'lump_total', 'lump_months', 'phone_period'].forEach((k) => delete d[k]);
+  if (Array.isArray(d.trips)) {
+    d.trips = d.trips.map((t) => ({ purpose: t.purpose, out_from: t.out_from, out_to: t.out_to,
+      back_from: t.back_from, back_to: t.back_to, km: t.km }));
+  }
+  return {
+    category_code: it.category_code, gl_code: it.gl_code || '', description: it.description,
+    receipt_date: '', receipt_no: '', receipt_type: it.receipt_type || 'tax_invoice',
+    is_overseas: !!it.is_overseas, currency: it.currency || 'USD', amount_foreign: '', fx_rate: '',
+    fx_source: it.fx_source || 'BOT', amount_thb: '', details: d,
+  };
+}
+
+async function viewHistory() {
+  $app.innerHTML = `<p class="muted center pad">กำลังโหลด…</p>`;
+  const owners = [S.profile, ...S.delegates.filter((x) => x.id !== S.profile.id)];
+  const { data, error } = await sb.from('claim_items')
+    .select('id, category_code, description, amount_thb, receipt_date, receipt_type, details, is_overseas, currency, fx_source, gl_code, created_at, claim:claims!inner(id, ref_no, status, claim_month, employee_id)')
+    .in('claim.employee_id', owners.map((o) => o.id))
+    .order('created_at', { ascending: false }).limit(300);
+  if (error) { $app.innerHTML = `<div class="note err">${esc(errMsg(error))}</div>`; return; }
+  const all = data || [];
+  const usedCats = [...new Set(all.map((x) => x.category_code))];
+  const ownerName = (id) => (owners.find((o) => o.id === id) || {}).full_name || '';
+
+  $app.innerHTML = `
+    <h1>ประวัติรายการ</h1>
+    <p class="muted small" style="margin-top:-8px">เลือกรายการที่เคยทำ แล้วกด "คัดลอก" ข้อมูลลูกค้าและรายละเอียดจะถูกกรอกให้ แก้แค่ยอดเงิน วันที่ และแนบใบเสร็จใหม่</p>
+    <section class="panel">
+      <div class="row">
+        <div><label for="hCat">ประเภท</label><select id="hCat"><option value="">ทั้งหมด</option>
+          ${usedCats.map((c) => { const k = catOf(c); return `<option value="${c}">${esc(k ? k.name : c)}</option>`; }).join('')}</select></div>
+        <div><label for="hQ">ค้นหา (ลูกค้า / รายละเอียด)</label><input id="hQ" placeholder="เช่น SIAM MITRPOL"></div>
+      </div>
+    </section>
+    <div id="hList"></div>`;
+
+  const list = document.getElementById('hList');
+  function draw() {
+    const cat = document.getElementById('hCat').value;
+    const q = document.getElementById('hQ').value.trim().toLowerCase();
+    const rows = all.filter((it) => (!cat || it.category_code === cat)
+      && (!q || `${customerOf(it)} ${it.description}`.toLowerCase().includes(q)));
+    list.innerHTML = rows.length ? `<section class="panel"><ul class="list hist">${rows.map((it) => {
+      const k = catOf(it.category_code);
+      return `<li><div class="hrow">
+        <div>
+          <span class="chip">${esc(k ? k.name : it.category_code)}</span>
+          ${customerOf(it) ? `<b> ${esc(customerOf(it))}</b>` : ''}
+          <div>${esc(it.description)}</div>
+          <div class="small muted">${fmtDate(it.receipt_date)} · <a href="#/claim/${it.claim.id}">${esc(it.claim.ref_no)}</a> · ${esc((STATUS[it.claim.status] || [it.claim.status])[0])}${it.claim.employee_id !== S.profile.id ? ` · ${esc(ownerName(it.claim.employee_id))}` : ''}</div>
+        </div>
+        <div class="hside"><span class="amt">${money(it.amount_thb)}</span>
+          <button class="btn ghost" type="button" data-copy="${it.id}">คัดลอก</button></div>
+      </div><div class="copybox" id="cb_${it.id}"></div></li>`;
+    }).join('')}</ul></section>` : '<div class="panel empty">ไม่พบรายการ</div>';
+  }
+  draw();
+  document.getElementById('hCat').addEventListener('change', draw);
+  document.getElementById('hQ').addEventListener('input', draw);
+
+  list.addEventListener('click', async (e) => {
+    const id = e.target.dataset && e.target.dataset.copy;
+    if (!id) return;
+    const it = all.find((x) => x.id === id);
+    const boxEl = document.getElementById('cb_' + id);
+    const owner = it.claim.employee_id;
+    const { data: drafts } = await sb.from('claims').select('id, ref_no, project, claim_month')
+      .eq('employee_id', owner).in('status', ['draft', 'returned']).order('created_at', { ascending: false });
+    const thisMonth = monthStart(bkkToday());
+    boxEl.innerHTML = `<label for="tg_${id}">คัดลอกไปที่</label>
+      <select id="tg_${id}">
+        <option value="new">สร้างใบเบิกใหม่ (เดือน${esc(monthLabel(thisMonth))})</option>
+        ${(drafts || []).map((c) => `<option value="${c.id}">${esc(c.ref_no)} · ${esc(c.project || 'ใบเบิก')} (ร่าง)</option>`).join('')}
+      </select>
+      <div class="actions"><button class="btn" type="button" id="go_${id}">คัดลอกแล้วแก้ตัวเลข</button></div>`;
+    document.getElementById('go_' + id).addEventListener('click', async (ev) => {
+      ev.target.disabled = true;
+      let target = document.getElementById('tg_' + id).value;
+      if (target === 'new') {
+        const k = catOf(it.category_code);
+        const { data: c, error: err } = await sb.from('claims').insert({
+          employee_id: owner, claim_month: thisMonth,
+          project: `${k ? k.name : 'ใบเบิก'}${customerOf(it) ? ' ' + customerOf(it) : ''}`.slice(0, 120),
+          pay_to: owner === S.profile.id ? S.profile.full_name : ownerName(owner),
+        }).select('id').single();
+        if (err) { toast(errMsg(err)); ev.target.disabled = false; return; }
+        target = c.id;
+      }
+      S.pendingCopy = { claimId: target, prefill: copyPrefill(it) };
+      location.hash = `#/claim/${target}`;
+    });
+  });
+}
+
+// คัดลอกทั้งใบ: สร้างใบร่างเดือนนี้ พร้อมรายการเดิม (ยอดเดิม) — ต้องแก้วันที่ใบเสร็จและแนบใบเสร็จใหม่
+async function copyWholeClaim(D) {
+  const { claim, items } = D;
+  const { data: c, error } = await sb.from('claims').insert({
+    employee_id: claim.employee_id, claim_month: monthStart(bkkToday()),
+    project: claim.project, pay_to: claim.pay_to,
+  }).select('id').single();
+  if (error) { toast(errMsg(error)); return; }
+  const rows = items.map((it, n) => {
+    const p = copyPrefill(it);
+    return {
+      claim_id: c.id, line_no: n + 1, category_code: p.category_code, gl_code: p.gl_code || null,
+      description: p.description, receipt_type: p.receipt_type, is_overseas: p.is_overseas,
+      currency: it.currency, amount_foreign: it.amount_foreign, fx_rate: it.fx_rate, fx_source: it.fx_source,
+      amount_thb: it.amount_thb, details: { ...p.details, trips: (it.details && it.details.trips) ? p.details.trips.map((t, i) => ({ ...t, fuel: it.details.trips[i].fuel, liters: it.details.trips[i].liters })) : undefined },
+    };
+  });
+  if (rows.length) {
+    const { error: e2 } = await sb.from('claim_items').insert(rows);
+    if (e2) { toast(errMsg(e2)); return; }
+  }
+  toast('คัดลอกทั้งใบแล้ว — แก้วันที่/ยอด และแนบใบเสร็จใหม่ทุกรายการ');
+  location.hash = `#/claim/${c.id}`;
 }
 
 // ---------------------------------------------------------------------
